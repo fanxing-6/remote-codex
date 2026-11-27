@@ -46,10 +46,10 @@ win:
     - from: ../bin/remote-codex-windows-amd64.exe
       to: bin/remote-codex.exe
 nsis:
-  artifactName: Remote Codex Setup.exe
+  artifactName: Remote-Codex-Setup-${version}.${ext}
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
 portable:
-  artifactName: Remote Codex Portable.exe
+  artifactName: Remote-Codex-Portable-${version}.${ext}
