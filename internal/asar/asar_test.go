@@ -55,6 +55,12 @@ func TestWhitelistPathsIntegrityAndBinding(t *testing.T) {
 	if other.BuildID == reader.BuildID {
 		t.Fatal("entry not bound")
 	}
+	if err = other.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = reader.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if err = os.Rename(second, path); err != nil {
 		t.Fatal(err)
 	}
