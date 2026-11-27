@@ -12,10 +12,11 @@ type Manager struct {
 	owner      string
 	close      func(int)
 	reset      func(uint64) error
+	idle       func(uint64) error
 }
 
-func New(initialGeneration uint64, reset func(uint64) error) *Manager {
-	return &Manager{generation: initialGeneration, reset: reset}
+func New(initialGeneration uint64, reset, idle func(uint64) error) *Manager {
+	return &Manager{generation: initialGeneration, reset: reset, idle: idle}
 }
 func (m *Manager) Acquire(id string, takeover bool, close func(int)) (uint64, error) {
 	return m.acquire(id, takeover, "", close)
@@ -55,7 +56,7 @@ func (m *Manager) Release(id string, generation uint64) error {
 	m.owner = ""
 	m.close = nil
 	m.generation++
-	return m.reset(m.generation)
+	return m.idle(m.generation)
 }
 func (m *Manager) With(id string, generation uint64, fn func() error) error {
 	m.mu.Lock()
@@ -80,5 +81,5 @@ func (m *Manager) Disconnect() error {
 	if close != nil {
 		close(protocol.TakenOver)
 	}
-	return m.reset(m.generation)
+	return m.idle(m.generation)
 }

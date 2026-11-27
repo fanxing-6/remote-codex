@@ -231,6 +231,12 @@ func (c *Client) Reset(generation uint64) error {
 	_, err := c.Call(ctx, map[string]any{"kind": "reset", "generation": generation})
 	return err
 }
+func (c *Client) Idle(generation uint64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := c.Call(ctx, map[string]any{"kind": "idle", "generation": generation})
+	return err
+}
 func (c *Client) Handlers(binary func([]byte), offline func()) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

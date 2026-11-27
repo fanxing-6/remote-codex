@@ -108,6 +108,15 @@ func New(c config.Config, store *auth.Store, log *logger.Logger, initialGenerati
 			return errors.New("HOST_OFFLINE")
 		}
 		return client.Reset(generation)
+	}, func(generation uint64) error {
+		g.mu.Lock()
+		g.active = nil
+		client := g.host
+		g.mu.Unlock()
+		if client == nil {
+			return errors.New("HOST_OFFLINE")
+		}
+		return client.Idle(generation)
 	})
 	return g
 }
@@ -480,7 +489,9 @@ func (g *Gateway) acquire(w http.ResponseWriter, r *http.Request, session *auth.
 		unbound := item.socket == nil
 		item.mu.Unlock()
 		if unbound {
-			g.Controllers.Release(item.id, item.generation)
+			if err := g.Controllers.Release(item.id, item.generation); err != nil {
+				g.Log.Add(logger.Event{Event: "host_idle_failed", ErrorCode: "HOST_IDLE_FAILED", Generation: item.generation})
+			}
 			g.mu.Lock()
 			delete(g.claims, item.id)
 			g.mu.Unlock()
@@ -527,7 +538,9 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 	defer func() {
 		connection.Close()
 		g.Auth.Unregister(session.ID, id)
-		g.Controllers.Release(id, item.generation)
+		if err := g.Controllers.Release(id, item.generation); err != nil {
+			g.Log.Add(logger.Event{Event: "host_idle_failed", ErrorCode: "HOST_IDLE_FAILED", Generation: item.generation})
+		}
 		g.mu.Lock()
 		delete(g.claims, id)
 		if g.active == item {

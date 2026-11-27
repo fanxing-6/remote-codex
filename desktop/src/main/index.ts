@@ -8,6 +8,7 @@ import { WindowManager } from './window.js';
 
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('in-process-gpu');
+app.commandLine.appendSwitch('use-mock-keychain');
 
 // 自动化验收通过独立 userData 使用与用户配置相同的启动路径。
 if (process.env.REMOTE_CODEX_USER_DATA)

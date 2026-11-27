@@ -9,7 +9,8 @@ import (
 func TestSerialTakeoverAndStaleRelease(t *testing.T) {
 	var resets atomic.Int64
 	var closing atomic.Int64
-	manager := New(0, func(uint64) error { resets.Add(1); return nil })
+	var idles atomic.Int64
+	manager := New(0, func(uint64) error { resets.Add(1); return nil }, func(uint64) error { idles.Add(1); return nil })
 	generation, err := manager.Acquire("initial", false, func(code int) {
 		if code != 4009 {
 			t.Error("close code")
@@ -50,9 +51,18 @@ func TestSerialTakeoverAndStaleRelease(t *testing.T) {
 	if resets.Load() != 41 {
 		t.Fatal("reset count")
 	}
+	if idles.Load() != 0 {
+		t.Fatal("stale release entered idle")
+	}
+	if err = manager.Release(owner, current); err != nil {
+		t.Fatal(err)
+	}
+	if idles.Load() != 1 || resets.Load() != 41 {
+		t.Fatal("release must enter idle without resetting")
+	}
 }
 func TestResumeCannotReplaceAnotherController(t *testing.T) {
-	manager := New(41, func(uint64) error { return nil })
+	manager := New(41, func(uint64) error { return nil }, func(uint64) error { return nil })
 	first, err := manager.Acquire("first", false, func(int) {})
 	if err != nil {
 		t.Fatal(err)
