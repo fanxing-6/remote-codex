@@ -1,0 +1,1 @@
+{"name":"remote-codex-build","private":true,"type":"module","scripts":{"build":"tsc --noEmit && node esbuild.mjs"},"dependencies":{"cbor-x":"1.6.0","ws":"8.23.0","qrcode":"1.5.4"},"devDependencies":{"@types/node":"^24.10.1","@types/ws":"^8.18.1","@types/qrcode":"^1.5.6","esbuild":"0.25.12","playwright":"1.56.1","typescript":"5.9.3"}}

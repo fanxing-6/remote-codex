@@ -1,0 +1,17 @@
+import {build} from 'esbuild';
+import {mkdir,readFile,copyFile,rm} from 'node:fs/promises';
+const out='../internal/embedassets/dist';
+await rm(out,{recursive:true,force:true});
+await mkdir(out+'/admin-ui',{recursive:true});
+const capture=await build({entryPoints:['shim/early-capture.ts'],bundle:true,platform:'browser',format:'iife',target:'chrome130',write:false});
+await build({entryPoints:['shim/host-transport.ts'],outfile:out+'/host-transport.js',bundle:true,platform:'browser',format:'iife',target:'chrome130'});
+await build({entryPoints:['shim/main-shim.ts'],outfile:out+'/shim.cjs',bundle:true,platform:'node',format:'cjs',target:'node22',external:['electron','bufferutil','utf-8-validate'],define:{HOST_TRANSPORT:JSON.stringify(await readFile(out+'/host-transport.js','utf8')),EARLY_CAPTURE:JSON.stringify(capture.outputFiles[0].text)}});
+await build({entryPoints:['browser/browser-transport.ts'],outfile:out+'/browser.js',bundle:true,platform:'browser',format:'iife',target:'chrome130'});
+await build({entryPoints:['admin-ui/app.ts'],outfile:out+'/admin-ui/app.js',bundle:true,platform:'browser',format:'iife',target:'es2022'});
+await build({entryPoints:['browser/login.ts'],outfile:out+'/login.js',bundle:true,platform:'browser',format:'iife',target:'es2022'});
+await copyFile('browser/login.html',out+'/login.html');
+await copyFile('browser/login.css',out+'/login.css');
+await copyFile('browser/mobile-layout.css',out+'/mobile.css');
+await copyFile('admin-ui/index.html',out+'/admin-ui/index.html');
+await copyFile('admin-ui/styles.css',out+'/admin-ui/styles.css');
+await copyFile('../config.schema.json',out+'/config.schema.json');

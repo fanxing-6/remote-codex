@@ -1,0 +1,49 @@
+{
+  "name": "remote-codex-desktop",
+  "version": "1.0.0",
+  "productName": "Remote Codex",
+  "description": "Remote Codex desktop control panel",
+  "author": "Remote Codex contributors",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "postinstall": "node scripts/install-runtime.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/install-runtime.mjs && tsc && node scripts/build.mjs",
+    "start": "electron .",
+    "package:mac": "npm run build && electron-builder --mac --arm64 --publish never",
+    "package:windows": "npm run build && electron-builder --win --x64 --publish never",
+    "test": "node --test dist/tests/*.test.js",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "allowScripts": {
+    "frida": false,
+    "esbuild": true,
+    "sharp": true,
+    "electron-winstaller": true
+  },
+  "dependencies": {
+    "frida": "17.28.0",
+    "ini": "6.0.0",
+    "tar": "7.5.24",
+    "ws": "8.23.0"
+  },
+  "overrides": {
+    "frida": {
+      "minimatch": "11.0.9"
+    }
+  },
+  "devDependencies": {
+    "@types/ini": "4.1.1",
+    "@types/node": "^24.10.1",
+    "@types/ws": "^8.18.1",
+    "electron": "45.5.0",
+    "electron-builder": "26.18.1",
+    "esbuild": "0.25.12",
+    "png2icons": "2.0.1",
+    "sharp": "0.34.5",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,14 @@
+.work/
+web/node_modules/
+bin/
+internal/embedassets/dist/
+.venv/
+**/.venv/
+.DS_Store
+/config.json
+/auth-state.json
+/runtime/
+/certs/
+desktop/node_modules/
+desktop/dist/
+desktop/release/

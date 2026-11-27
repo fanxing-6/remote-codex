@@ -1,0 +1,28 @@
+{
+ "$schema":"https://json-schema.org/draft/2020-12/schema",
+ "type":"object","additionalProperties":false,
+ "required":["publicOrigin","allowedHosts","dataPort","adminPort","auth","allowInsecureLocalhost","trustedProxy"],
+ "properties":{
+  "tunnelMode":{"enum":["quick","custom"],"default":"quick"},
+  "quickTunnelProtocol":{"enum":["","auto","http2","quic"],"default":"http2"},
+  "publicOrigin":{"type":"string","pattern":"^(https?://[^/]+)?$"},
+  "allowedHosts":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}},
+  "dataPort":{"type":"integer","minimum":1024,"maximum":65535},
+  "adminPort":{"type":"integer","minimum":1024,"maximum":65535},
+  "tlsPort":{"type":"integer","default":0,"anyOf":[{"const":0},{"minimum":1024,"maximum":65535}]},
+  "tlsAutocert":{"type":"boolean","default":false},
+  "allowInsecureLocalhost":{"type":"boolean"},
+  "trustedProxy":{"type":"array","items":{"type":"string"}},
+  "bootstrapPython":{"type":"string"},"bootstrapHelper":{"type":"string","default":""},
+  "auth":{"type":"object","additionalProperties":false,"required":["mode"],"properties":{
+   "mode":{"enum":["password","cloudflare-access"]},
+   "password":{"type":"object","additionalProperties":false,"required":["algo","N","r","p","salt","hash"],"properties":{"algo":{"const":"scrypt-v1"},"N":{"const":32768},"r":{"const":8},"p":{"const":1},"salt":{"type":"string","minLength":32,"maxLength":32},"hash":{"type":"string","minLength":64,"maxLength":64}}},
+   "teamDomain":{"type":"string","pattern":"^[a-z0-9-]+\\.cloudflareaccess\\.com$"},"audience":{"type":"string","minLength":1}
+  },"allOf":[{"if":{"properties":{"mode":{"const":"cloudflare-access"}}},"then":{"required":["teamDomain","audience"]}}]}
+ },
+ "allOf":[
+  {"if":{"required":["tunnelMode"],"properties":{"tunnelMode":{"const":"quick"}}},"then":{"properties":{"allowInsecureLocalhost":{"const":false},"tlsPort":{"const":0},"tlsAutocert":{"const":false},"auth":{"properties":{"mode":{"const":"password"}}}}}},
+  {"if":{"required":["tunnelMode"],"properties":{"tunnelMode":{"const":"custom"}}},"then":{"properties":{"publicOrigin":{"pattern":"^https?://[^/]+$"},"allowedHosts":{"minItems":1}}}},
+  {"if":{"required":["tlsAutocert"],"properties":{"tlsAutocert":{"const":true}}},"then":{"required":["tlsPort"],"properties":{"tlsPort":{"minimum":1024},"publicOrigin":{"pattern":"^https://"}}}}
+ ]
+}

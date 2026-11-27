@@ -1,0 +1,96 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (vX.Y.Z)
+        required: true
+permissions:
+  contents: write
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - os: macos-15
+            target: mac
+          - os: windows-latest
+            target: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+      - name: Prepare isolated temporary directory
+        shell: bash
+        run: |
+          mkdir -p .work/tmp
+          task_temp="$PWD/.work/tmp"
+          if [ "$RUNNER_OS" = Windows ]; then task_temp="$(cygpath -m "$task_temp")"; fi
+          echo "TMPDIR=$task_temp" >> "$GITHUB_ENV"
+          echo "TMP=$task_temp" >> "$GITHUB_ENV"
+          echo "TEMP=$task_temp" >> "$GITHUB_ENV"
+      - name: Build web assets
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - name: Build and verify sidecar
+        shell: bash
+        run: |
+          go test -race ./...
+          go vet ./...
+          mkdir -p bin
+          if [ "$RUNNER_OS" = Windows ]; then
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/remote-codex-windows-amd64.exe ./cmd/remote-codex
+          else
+            go build -trimpath -o bin/remote-codex ./cmd/remote-codex
+          fi
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+      - name: Build installer
+        working-directory: desktop
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          npm version "${RELEASE_TAG#v}" --no-git-tag-version
+          npm run typecheck
+          npm run package:${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.target }}
+          path: |
+            desktop/release/*.dmg
+            desktop/release/*.zip
+            desktop/release/*.exe
+          if-no-files-found: error
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: installers
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: gh release create "$RELEASE_TAG" installers/* --verify-tag --generate-notes

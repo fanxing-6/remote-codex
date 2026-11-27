@@ -1,0 +1,60 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    strategy:
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+      - name: Prepare isolated temporary directory
+        shell: bash
+        run: |
+          mkdir -p .work/tmp
+          task_temp="$PWD/.work/tmp"
+          if [ "$RUNNER_OS" = Windows ]; then task_temp="$(cygpath -m "$task_temp")"; fi
+          echo "TMPDIR=$task_temp" >> "$GITHUB_ENV"
+          echo "TMP=$task_temp" >> "$GITHUB_ENV"
+          echo "TEMP=$task_temp" >> "$GITHUB_ENV"
+      - name: Build web assets
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - name: Verify Go
+        shell: bash
+        run: |
+          go test -race ./...
+          go vet ./...
+          test -z "$(gofmt -l cmd internal)"
+      - name: Build sidecar
+        shell: bash
+        run: |
+          mkdir -p bin
+          if [ "$RUNNER_OS" = Windows ]; then
+            GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -o bin/remote-codex-windows-amd64.exe ./cmd/remote-codex
+          else
+            go build -trimpath -o bin/remote-codex ./cmd/remote-codex
+          fi
+      - name: Verify desktop
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+          npm test

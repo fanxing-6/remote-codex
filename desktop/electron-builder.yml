@@ -1,0 +1,55 @@
+appId: io.github.remotecodex.desktop
+productName: Remote Codex
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/main/**
+  - dist/bootstrapper/**
+  - dist/agents/**
+  - package.json
+asarUnpack:
+  - node_modules/**
+  - dist/bootstrapper/**
+  - dist/agents/**
+  - package.json
+npmRebuild: false
+extraResources:
+  - from: ../internal/host
+    to: agents
+    filter:
+      - darwin_inspector.js
+      - windows_bootstrap.js
+  - from: build/tray.png
+    to: tray.png
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  identity: null
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  extraResources:
+    - from: ../bin/remote-codex
+      to: bin/remote-codex
+  artifactName: Remote-Codex-${version}-mac-${arch}.${ext}
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  extraResources:
+    - from: ../bin/remote-codex-windows-amd64.exe
+      to: bin/remote-codex.exe
+nsis:
+  artifactName: Remote Codex Setup.exe
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+portable:
+  artifactName: Remote Codex Portable.exe
