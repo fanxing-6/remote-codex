@@ -20,13 +20,13 @@ jobs:
             target: windows
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: npm
@@ -70,7 +70,7 @@ jobs:
           npm version "${RELEASE_TAG#v}" --no-git-tag-version
           npm run typecheck
           npm run package:${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: installers-${{ matrix.target }}
           path: |
@@ -82,7 +82,7 @@ jobs:
     needs: package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: installers-*
           merge-multiple: true

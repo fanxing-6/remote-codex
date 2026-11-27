@@ -11,11 +11,11 @@ jobs:
         os: [macos-15, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: npm
@@ -41,7 +41,11 @@ jobs:
         run: |
           go test -race ./...
           go vet ./...
-          test -z "$(gofmt -l cmd internal)"
+          unformatted_files="$(gofmt -l cmd internal)"
+          if [ -n "$unformatted_files" ]; then
+            printf 'gofmt found unformatted files:\n%s\n' "$unformatted_files"
+            exit 1
+          fi
       - name: Build sidecar
         shell: bash
         run: |
