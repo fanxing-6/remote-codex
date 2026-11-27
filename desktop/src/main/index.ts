@@ -6,6 +6,9 @@ import { SidecarManager } from './sidecar.js';
 import { TrayManager } from './tray.js';
 import { WindowManager } from './window.js';
 
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch('in-process-gpu');
+
 // 自动化验收通过独立 userData 使用与用户配置相同的启动路径。
 if (process.env.REMOTE_CODEX_USER_DATA)
   app.setPath('userData', path.resolve(process.env.REMOTE_CODEX_USER_DATA));
@@ -119,13 +122,14 @@ else {
   app.on('activate', () => {
     if (windows) void windows.open().catch(report);
   });
-  app.on('window-all-closed', () => {});
+  app.on('window-all-closed', () => {
+    if (!exiting) app.dock?.hide();
+  });
   app.on('before-quit', (event) => {
     if (stopped) return;
     event.preventDefault();
     if (exiting) return;
     exiting = true;
-    windows?.allowQuit();
     void (async () => {
       try {
         await sidecar?.stop();

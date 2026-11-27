@@ -1,19 +1,28 @@
-import { BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, session, shell } from 'electron';
 import { fileURLToPath } from 'node:url';
 import type { SidecarManager } from './sidecar.js';
 import { isAdminURL, isExternalURL } from './navigation.js';
 
 export class WindowManager {
   private window?: BrowserWindow;
-  private quitting = false;
 
   constructor(
     private sidecar: SidecarManager,
     private report: (error: unknown) => void,
-  ) {}
-
-  allowQuit(): void {
-    this.quitting = true;
+  ) {
+    session.defaultSession.setPermissionRequestHandler(
+      (contents, permission, callback) => {
+        callback(
+          !contents.isDestroyed() &&
+            contents === this.window?.webContents &&
+            isAdminURL(contents.getURL(), this.sidecar.origin) &&
+            permission === 'clipboard-sanitized-write',
+        );
+      },
+    );
+    session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+      callback({ cancel: !isAdminURL(details.url, this.sidecar.origin) });
+    });
   }
 
   private external(url: string): void {
@@ -23,10 +32,13 @@ export class WindowManager {
   }
 
   async open(): Promise<BrowserWindow> {
-    if (this.window && !this.window.isDestroyed()) {
-      this.window.show();
-      this.window.focus();
-      return this.window;
+    const existing = this.window;
+    if (existing && !existing.isDestroyed()) {
+      await app.dock?.show();
+      if (existing.isDestroyed()) return this.open();
+      existing.show();
+      existing.focus();
+      return existing;
     }
     const window = new BrowserWindow({
       width: 1200,
@@ -66,35 +78,17 @@ export class WindowManager {
       else this.external(url);
       return { action: 'deny' };
     });
-    window.webContents.session.setPermissionRequestHandler(
-      (contents, permission, callback) => {
-        callback(
-          contents === window.webContents &&
-            local(contents.getURL()) &&
-            permission === 'clipboard-sanitized-write',
-        );
-      },
-    );
-    window.webContents.session.webRequest.onBeforeRequest(
-      (details, callback) => {
-        callback({ cancel: !local(details.url) });
-      },
-    );
-    window.on('close', (event) => {
-      if (!this.quitting) {
-        event.preventDefault();
-        window.hide();
-      }
-    });
     window.on('closed', () => {
-      this.window = undefined;
+      if (this.window === window) this.window = undefined;
     });
     window.once('ready-to-show', () => window.show());
     try {
-      await window.loadURL(await this.sidecar.bootstrapURL());
+      await app.dock?.show();
+      const url = await this.sidecar.bootstrapURL();
+      if (!window.isDestroyed()) await window.loadURL(url);
       return window;
     } catch (error) {
-      window.destroy();
+      if (!window.isDestroyed()) window.destroy();
       throw error;
     }
   }

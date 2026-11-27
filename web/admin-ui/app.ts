@@ -26,6 +26,7 @@ let csrf = '',
   preview: any,
   diagnostics: any = {},
   logs: any[] = [],
+  lastQRAt = 0,
   loggedIn = false,
   polling = false;
 function message(text: string) {
@@ -152,6 +153,7 @@ async function refreshQR(target?: string) {
     margin: 1,
     color: { dark: '#204d3f', light: '#ffffff' },
   });
+  lastQRAt = Date.now();
 }
 async function refresh() {
   current = await api('config');
@@ -386,7 +388,8 @@ history.replaceState(null, '', location.pathname);
 (bootstrap ? exchange(bootstrap) : authenticated()).catch(() =>
   message('请使用启动器打开控制面板，或输入一次性引导码。'),
 );
-setInterval(async () => {
+async function syncStatusAndLogs(refreshExpiredQR = false) {
+  if (document.hidden) return;
   if (!loggedIn || polling) return;
   polling = true;
   try {
@@ -398,13 +401,16 @@ setInterval(async () => {
       await refreshQR();
     }
     await renderLogs();
+    if (refreshExpiredQR && Date.now() - lastQRAt >= 240000) await refreshQR();
   } catch (error) {
     message((error as Error).message);
   } finally {
     polling = false;
   }
-}, 5000);
+}
+setInterval(syncStatusAndLogs, 5000);
 setInterval(async () => {
+  if (document.hidden) return;
   if (loggedIn && current.publicOrigin)
     try {
       await refreshQR();
@@ -412,3 +418,6 @@ setInterval(async () => {
       message((error as Error).message);
     }
 }, 240000);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && loggedIn) void syncStatusAndLogs(true);
+});
