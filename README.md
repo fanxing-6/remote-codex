@@ -1,138 +1,144 @@
 # Remote Codex
 
-Use your desktop **ChatGPT / Codex** app from your phone or any browser — without modifying the official app.
+把电脑上的 **ChatGPT / Codex 桌面版** 直接搬到手机或任意浏览器里用——不修改官方安装包，不破坏签名，装好扫码就能连。
 
-[简体中文](README.zh-CN.md) · [Security Model](docs/SECURITY.md)
-
----
-
-## Why this exists
-
-Desktop ChatGPT (especially Work / Codex mode with your local projects, tools, and session) is stuck on your Mac or Windows machine. Leaving the desk shouldn't mean losing access to an active thread or kicking off a quick task from your phone.
-
-**Remote Codex** attaches to your running desktop app in memory, serves its exact native UI over HTTPS/WSS, and wraps everything into a standard installable app for macOS and Windows. Open it, scan the QR code on your phone, and you're in.
-
-No domain, no Cloudflare account, no Python, and no terminal setup required out of the box.
-
-## What you get
-
-- **Install and scan (Zero Config by default)** — Ships as a macOS `.dmg` and Windows `.exe` installer. On first launch it generates a strong random password, brings up a temporary HTTPS tunnel (`trycloudflare.com`, auto-downloading `cloudflared` if you don't have it), and shows a one-tap login QR code.
-- **Keep your own domain when you want speed & permanence** — Switch to Custom Domain mode for a fixed URL, persistent login sessions (survives restarts, slides forward automatically), and bookmarkable permanent login links. Built-in Let's Encrypt auto-TLS (`TLS-ALPN-01`) works directly behind TLS-passthrough tunnels like frp / SakuraFRP, or pair it with Cloudflare Named Tunnel / Access.
-- **Actually usable on a phone** — Desktop Electron apps behave terribly on mobile browsers out of the box. Remote Codex fixes the parts that hurt in real daily use:
-  - Syncs layout height with `visualViewport` and `interactive-widget=resizes-content` so the input box sits flush above your soft keyboard instead of disappearing beneath it.
-  - Blocks the desktop app's aggressive auto-focus calls on mobile so your keyboard stops popping up randomly when switching chats, closing menus, or returning to the tab.
-  - Lets Android open your actual local file manager (not just Photos & Gallery), and routes Work/Codex attachments back to your desktop host through the browser attachment channel.
-- **Does not modify the official app** — Reads static assets directly from `app.asar` (read-only) and attaches a small in-memory shim via bundled Node.js Frida. Code signatures and ASAR integrity stay untouched.
-- **Single-controller safety** — Only one browser tab controls the desktop host at a time. Opening it on another device offers a clean one-click takeover instead of scrambling state.
-
-## Quick Start
-
-### 1. Download & open
-
-Grab the latest installer from [GitHub Releases](../../releases):
-
-- **macOS (Apple Silicon)**: `Remote-Codex-*-mac-arm64.dmg`
-- **Windows (x64)**: `Remote-Codex-Setup-*.exe`
-
-Make sure the official ChatGPT desktop app is running, then launch **Remote Codex**.
-
-> **macOS Gatekeeper note**: Release builds are currently unsigned. If macOS says the app is damaged or from an unidentified developer, run `xattr -dr com.apple.quarantine "/Applications/Remote Codex.app"` once.
-
-### 2. Scan the QR code
-
-Remote Codex starts in **Quick Tunnel** mode by default:
-
-1. Wait a few seconds for the temporary `https://*.trycloudflare.com` address to come up.
-2. Scan the QR code in the control panel with your phone.
-3. Done — you're logged in with a one-time magic link (the secret lives in the URL `#fragment`, so proxies and servers never see it).
-
-Closing the window keeps Remote Codex quietly running in your menu bar / system tray.
+[English](README.en.md) · [安全设计说明](docs/SECURITY.md)
 
 ---
 
-## Using Your Own Domain (Optional)
+## 为什么要做这个
 
-Quick Tunnel is great for getting started, though Cloudflare rotates the URL every restart and overseas nodes can be slow depending on your network.
+ChatGPT 桌面版（尤其是 **Work / Codex 模式**，带本地工作区、本地工具和电脑上的完整会话）只能守在 Mac 或 Windows 电脑前用。离开工位、躺床上或者在外面时，想看看任务跑完没有、顺手发一条新指令都很不方便。
 
-If you want a **fixed URL**, **permanent login across restarts**, and **fast direct routing**, switch to **Custom Domain** in the Control Panel:
+**Remote Codex** 会在内存中无侵入挂载到本机运行中的 ChatGPT 桌面端，把它的原生界面完整透传到手机/电脑浏览器里，并打包成 macOS 和 Windows 原生可安装软件。打开应用、手机扫码，几秒钟就能直接开用。
 
-- **With frp / SakuraFRP (End-to-end TLS)**:
-  1. Point your domain (`chat.example.com`) to your frp node (DNS-only, no proxy).
-  2. Configure an HTTPS tunnel with **TLS passthrough** forwarding to `127.0.0.1:18443` (disable proxy-side auto-HTTPS).
-  3. Enable `tlsPort: 18443` and `tlsAutocert: true` in Remote Codex. It obtains and renews a Let's Encrypt certificate directly on your machine — the relay node only sees encrypted TLS bytes.
-- **With Cloudflare Named Tunnel / Access**:
-  - Point your tunnel ingress to `http://127.0.0.1:18765` (never expose admin port `18766`). The Control Panel includes a safe `config.yml` diff preview before touching anything.
+默认情况下，**不需要买域名、不需要注册 Cloudflare 账号、不需要装 Python、也不需要敲命令行**。
 
-Once on a fixed domain, you can also generate a **Permanent Login Link** from the Control Panel (or `remote-codex ticket --permanent`) to bookmark across devices. Clicking **Revoke All Sessions & Links** or changing your password kills every active session and every permanent link immediately.
+## 核心特点
+
+- **下载即用，默认零配置** — 提供 macOS `.dmg` 与 Windows `.exe` 安装包。首次打开自动生成强随机密码、自动拉起 Cloudflare Quick Tunnel（`trycloudflare.com`，本机没装 `cloudflared` 会自动下载），窗口里直接弹出扫码直登二维码。
+- **也支持自有域名：更快、固定地址、永久免登** — 如果你有自己的域名，可以一键切到「固定域名模式」：
+  - 内置 **Let's Encrypt 原生自动 TLS（TLS-ALPN-01）**，直接配合 SakuraFRP / frp 做 TLS 透传，国内直连速度快且端到端加密（中转节点看不到明文）；
+  - 也支持 Cloudflare Named Tunnel / Cloudflare Access；
+  - 登录后会话持久化（重启软件不掉登录），并支持生成可收藏书签的**永久直登链接**，随时一键吊销。
+- **真正认真调过手机端体验** — 直接把桌面 Electron 界面放到手机浏览器里其实坑非常多，这里把最影响日常使用的几个全修掉了：
+  - **软键盘对齐**：结合 `interactive-widget=resizes-content` 与 `visualViewport` 实时同步可视高度，弹出输入法时输入框紧贴键盘上沿，不会被顶出屏幕。
+  - **不再莫名其妙弹输入法**：拦截桌面端几百处自动聚焦（`autoFocus` / `focusComposer` / 关菜单回焦），并在手动收起软键盘时同步失焦；只有你真的手动点进输入框才会弹键盘。
+  - **Android 本地文件管理器 & Work 附件上传**：在 Android 上放开限制性 `accept`（保留独立拍照入口），不再被锁死在“照片和相册”；同时给「工作」会话接入浏览器附件通道，手机选的任意文件可直接传回电脑宿主。
+- **零修改官方 App** — 纯只读读取 `app.asar` 静态资源，通过 Electron 内置的 Node.js Frida 在内存注入轻量 Shim，不动官方应用文件与代码签名。
+- **单控制权防冲突** — 同一时间只允许一个浏览器页面控制宿主，换设备打开支持一键「接管控制权」，避免多端同时操作把状态写乱。
+
+## 快速开始
+
+### 1. 安装并打开
+
+前往 [GitHub Releases](../../releases) 下载对应系统的安装包：
+
+- **macOS（Apple Silicon）**：`Remote-Codex-*-mac-arm64.dmg`
+- **Windows（x64）**：`Remote-Codex-Setup-*.exe`
+
+先启动电脑上的官方 ChatGPT 桌面版，再打开 **Remote Codex**。
+
+> **macOS 提示**：当前发布的安装包未经过苹果开发者签名。如果系统提示“已损坏”或“无法验证开发者”，在终端执行一次：
+> ```bash
+> xattr -dr com.apple.quarantine "/Applications/Remote Codex.app"
+> ```
+
+### 2. 手机扫码直登
+
+软件默认以 **一键临时公网（Quick Tunnel）** 启动：
+
+1. 等几秒自动拿到临时的 `https://*.trycloudflare.com` 入口地址；
+2. 用手机扫描控制面板里的二维码；
+3. 自动完成免密登录（直登票据放在 URL 的 `#ticket=` 片段中，不会经过任何代理或服务端日志，打开后自动抹除地址栏并写入安全 Cookie）。
+
+关掉控制面板窗口后，程序会缩到菜单栏 / 系统托盘继续在后台运行。
 
 ---
 
-## How it works
+## 进阶：使用自己的固定域名
+
+Quick Tunnel 零门槛、上手最快，但有两个天然限制：每次重启都会换新域名，而且国内不开梯子走 Cloudflare 节点延迟偏高。
+
+如果你需要**固定书签、重启不掉登录、国内直连高速**，可以在控制面板切到「固定域名模式」：
+
+### 方案 A：SakuraFRP / frp + 原生自动 TLS（国内直连最推荐）
+1. 在 DNS 把域名（例如 `chat.example.com`）CNAME 到你的 frp 节点（如用 Cloudflare DNS 请设为**仅 DNS / 灰云**）。
+2. 在 frp 创建 HTTPS 隧道，**关闭服务端自动 HTTPS**，做纯 TLS 透传指向本机 `127.0.0.1:18443`。
+3. 在 Remote Codex 配置中启用 `tlsPort: 18443`、`tlsAutocert: true`。程序会自动向 Let's Encrypt 申请并续签正式证书，私钥只留在本机。
+
+### 方案 B：Cloudflare Named Tunnel / Access
+- 将隧道规则指向本机数据面 `http://127.0.0.1:18765`（**切勿暴露本地管理端口 `18766`**）。控制面板内置 `config.yml` Diff 预览与自动备份，确认后才写入。
+
+切到固定域名后，你可以在控制面板点击「**生成并复制永久直登链接**」（或执行 `remote-codex ticket --permanent`）把链接存进手机书签。万一需要作废，点「**吊销全部会话与直登链接**」或修改主密码，所有设备会话和永久链接都会立刻失效并断开 WebSocket。
+
+---
+
+## 架构简图
 
 ```text
-Phone / Browser (HTTPS + WSS)
+手机 / 电脑浏览器 (HTTPS + WSS)
         │
         ▼
-Cloudflare Quick Tunnel (default)  ──or──  Your Domain (frp + built-in Auto-TLS / CF Tunnel)
+Cloudflare Quick Tunnel (默认)   或   自有域名 (frp + 内置自动 TLS / CF Tunnel)
         │
         ▼
-Remote Codex Desktop (Electron)
-  ├── Control Panel Window & System Tray
-  ├── Bundled Node.js Frida Bootstrapper (zero Python needed)
-  └── Go Core Sidecar (127.0.0.1 only)
-        ├── Public Gateway (:18765 / TLS :18443)  ── Auth, ASAR reader, CBOR WS bridge
-        └── Local Admin API (:18766)              ── Never exposed publicly
+Remote Codex 桌面端 (Electron)
+  ├── 原生控制面板窗口 & 系统托盘
+  ├── 内置 Node.js Frida 挂载器（桌面版零 Python 依赖）
+  └── Go 核心 Sidecar（仅绑定 127.0.0.1）
+        ├── 公开数据面 (:18765 / TLS :18443)  ── 鉴权、纯 Go ASAR 读取、CBOR WS 网桥
+        └── 本地管理面 (:18766)               ── 严禁暴露公网
         │
-        ▼  Loopback WebSocket (per-session bearer token)
-Unmodified ChatGPT Desktop App (in-memory shim)
+        ▼  本机回环受控 IPC（单次会话 Bearer Token）
+官方 ChatGPT 桌面版（仅内存轻量 Shim，原包零改动）
 ```
 
-Everything stays split along clear boundaries:
+代码按职责清晰分层：
 
-- **`desktop/`** — Electron shell (`SidecarManager`, `WindowManager`, `TrayManager`, `CloudflaredManager`, and the zero-Python `Node-Frida` bootstrapper).
-- **`cmd/remote-codex/` & `internal/`** — Go core engine with pluggable `tunnel.Provider` (`QuickProvider` / `CustomProvider`) and `host.Bootstrapper` interfaces, pure-Go ASAR reader, Let's Encrypt `autocert`, persistent hash-only `auth-state.json` (`0600`), and single-controller arbiter.
-- **`web/`** — Browser runtime shim (`browser-transport.ts`, `mobile-runtime.ts`, `mobile-layout.css`), Electron host shim, and local Admin UI.
-
----
-
-## Security Highlights
-
-- **Admin panel is strictly loopback-only** (`127.0.0.1:18766`) and rejected on any public host.
-- **Never runs unauthenticated** — Quick Tunnel auto-generates a 256-bit `scrypt`-hashed password on first run.
-- **No plaintext session or ticket secrets on disk** — `auth-state.json` (`0600`) stores only SHA-256 digests.
-- **Fragment-only magic links** — `#ticket=...` is stripped immediately via `history.replaceState` and exchanged over CSRF-protected `POST /auth/ticket` for an `HttpOnly; Secure; SameSite=Strict` cookie.
-- **Official app stays untouched** — macOS `codesign --verify --deep --strict` passes before and after use.
-
-More details in [docs/SECURITY.md](docs/SECURITY.md).
+- **`desktop/`**：Electron 桌面壳，拆分为 `SidecarManager`、`WindowManager`、`TrayManager`、`CloudflaredManager` 与零 Python 的 `Node-Frida` 挂载器。
+- **`cmd/remote-codex/` 与 `internal/`**：Go 核心引擎，抽象统一的 `tunnel.Provider`（`QuickProvider` / `CustomProvider`）与 `host.Bootstrapper` 接口，内置纯 Go ASAR 读取器、`autocert` 自动证书、仅存哈希的持久化认证存储（`auth-state.json`，`0600`）与单控制权仲裁器。
+- **`web/`**：浏览器端兼容层（`browser-transport.ts`、`mobile-runtime.ts`、`mobile-layout.css`）、宿主内存 Shim 与本地控制面板前端。
 
 ---
 
-## Build from Source
+## 安全说明
 
-Requires **Go 1.24+** and **Node.js 22+**.
+- **管理面与数据面彻底隔离**：管理端口仅监听 `127.0.0.1:18766`，任何公网入口均无法访问 `/admin` 或管理接口。
+- **默认绝不无密码裸奔**：首次以 Quick Tunnel 启动时自动生成 256-bit 随机主密码并以 `scrypt` 哈希保存。
+- **磁盘零明文凭据**：持久化文件 `auth-state.json`（`0600`）仅保存 Session 与永久 Ticket 的 SHA-256 摘要。
+- **官方应用签名完好**：全程不修改 `/Applications/ChatGPT.app` 或 Windows MSIX 安装目录。
+
+更多细节见 [docs/SECURITY.md](docs/SECURITY.md)。
+
+---
+
+## 从源码构建
+
+需要 **Go 1.24+** 与 **Node.js 22+**。
 
 ```bash
-# Build Go core + embedded web assets
+# 编译 Go 核心与内嵌前端资源
 make build
 
-# Run Go race tests & vet
+# 运行 Go 竞态测试与静态检查
 make test
 go vet ./...
 
-# Package macOS installer (.dmg & .zip -> desktop/release/)
+# 打包 macOS 安装包（产物在 desktop/release/）
 make package-mac
 
-# Package Windows installer (on Windows: .exe -> desktop/release/)
+# 打包 Windows 安装包（需在 Windows 上执行，产物在 desktop/release/）
 make package-windows
 ```
 
-### Headless CLI Mode (Optional)
+### 纯命令行无头模式（可选）
 
-If you prefer running the standalone Go binary without Electron:
+如果不想用 Electron，只想单独跑 Go 二进制：
 
 ```bash
-./scripts/setup-python.sh      # creates a tiny local venv for Frida (only needed without Electron)
-./bin/remote-codex             # starts Quick Tunnel + opens control panel in browser
+./scripts/setup-python.sh      # 仅独立命令行模式需要一个小型 Python venv 跑 Frida
+./bin/remote-codex             # 默认启动 Quick Tunnel 并在浏览器打开控制面板
 ./bin/remote-codex status
 ./bin/remote-codex doctor
 ./bin/remote-codex ticket --permanent
@@ -141,11 +147,11 @@ If you prefer running the standalone Go binary without Electron:
 
 ---
 
-## Compatibility & Disclaimer
+## 兼容性与声明
 
-- Verified against ChatGPT / Codex Desktop `26.1117.41037` on **macOS (Apple Silicon)** and **Windows 11 (x64)**. Newer desktop builds may require updating host hooks if internal Electron/V8 layouts change.
-- **Unofficial project**: Remote Codex is an independent open-source tool and is not affiliated with or endorsed by OpenAI. It is intended for personal access to your own running desktop app.
+- 已在 **macOS（Apple Silicon）** 与 **Windows 11（x64）** 的 ChatGPT / Codex 桌面版 `26.1117.41037` 上实测通过。若官方未来大版本调整底层 Electron/V8 结构，可能需要同步更新宿主适配。
+- **非官方开源工具**：本项目为独立开源工具，与 OpenAI 无任何隶属或合作关系，仅供个人安全访问自己电脑上运行中的桌面客户端。
 
-## License
+## 许可证
 
 [MIT](LICENSE)
