@@ -9,9 +9,9 @@ import (
 )
 
 func TestBrowserAttachmentAsset(t *testing.T) {
-	filename := "/Applications/ChatGPT.app/Contents/Resources/app.asar"
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		t.Skip("official macOS application unavailable")
+	filename := os.Getenv("REMOTE_CODEX_TEST_ASAR")
+	if filename == "" {
+		t.Skip("set REMOTE_CODEX_TEST_ASAR to an authorized application archive")
 	}
 	archive, err := asar.Open(filename)
 	if err != nil {

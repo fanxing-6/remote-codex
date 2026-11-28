@@ -265,6 +265,7 @@ root.__cwbHost = {
   },
 };
 if (root.__cwbCapture) {
+  root.__cwbCapture.stopObserving?.();
   window.removeEventListener('message', root.__cwbCapture);
   delete root.__cwbCapture;
 }

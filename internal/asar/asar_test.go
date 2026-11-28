@@ -85,9 +85,9 @@ func TestSymlinkAndUnpackedRejected(t *testing.T) {
 	}
 }
 func TestOfficialArchive(t *testing.T) {
-	path := "/Applications/ChatGPT.app/Contents/Resources/app.asar"
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Skip("macOS application unavailable")
+	path := os.Getenv("REMOTE_CODEX_TEST_ASAR")
+	if path == "" {
+		t.Skip("set REMOTE_CODEX_TEST_ASAR to an authorized application archive")
 	}
 	reader, err := Open(path)
 	if err != nil {

@@ -41,6 +41,7 @@ type application struct {
 	ctx                                context.Context
 	provider                           tunnel.Provider
 	manualHost                         bool
+	hostProbeFailures                  int
 }
 
 func (a *application) start() error {
@@ -78,6 +79,7 @@ func (a *application) startLocked() error {
 		return err
 	}
 	a.client, a.archive = client, archive
+	a.hostProbeFailures = 0
 	a.log.Add(logger.Event{Event: "host_connected", DurationMS: int64(client.Endpoint.BootstrapElapsedMS)})
 	return nil
 }
@@ -248,19 +250,24 @@ func (a *application) superviseHost(ctx context.Context) {
 		client, adapter, archive := a.client, a.adapter, a.archive
 		a.mu.Unlock()
 		if client == nil {
+			a.hostProbeFailures = 0
 			if a.startLocked() != nil {
 				a.log.Add(logger.Event{Event: "host_attach_deferred", ErrorCode: "HOST_UNAVAILABLE"})
 			}
 		} else {
-			probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-			err := adapter.ProbeRuntime(probeCtx, client)
-			cancel()
-			if err == nil {
-				err = archive.Consistent(client.Endpoint.AssetBuildID)
+			archiveErr := archive.Consistent(client.Endpoint.AssetBuildID)
+			var probeErr error
+			if archiveErr == nil && client.Snapshot()["ready"] != false {
+				probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				probeErr = adapter.ProbeRuntime(probeCtx, client)
+				cancel()
 			}
-			if err != nil {
+			if a.shouldReconnectHost(probeErr, archiveErr, client.Snapshot()["ready"] == false) {
 				a.log.Add(logger.Event{Event: "host_probe_failed", ErrorCode: "HOST_PROBE_FAILED"})
-				if a.stopLocked() == nil && a.enabled.Load() {
+				if err := a.stopLocked(); err != nil {
+					a.log.Add(logger.Event{Event: "host_detach_failed", ErrorCode: "HOST_DETACH_FAILED"})
+				}
+				if a.enabled.Load() {
 					if a.startLocked() != nil {
 						a.log.Add(logger.Event{Event: "host_attach_deferred", ErrorCode: "HOST_UNAVAILABLE"})
 					}
@@ -269,4 +276,17 @@ func (a *application) superviseHost(ctx context.Context) {
 		}
 		a.operation.Unlock()
 	}
+}
+
+func (a *application) shouldReconnectHost(probeErr, archiveErr error, offline bool) bool {
+	if offline || archiveErr != nil {
+		a.hostProbeFailures = 0
+		return true
+	}
+	if probeErr == nil {
+		a.hostProbeFailures = 0
+		return false
+	}
+	a.hostProbeFailures++
+	return a.hostProbeFailures >= 3
 }

@@ -188,10 +188,13 @@ export function install(options: any) {
               );
               generation = request.generation;
             } else if (request.kind === 'probe') {
-              if (ready)
-                await target.webContents.executeJavaScript(
-                  '!!window.__cwbHost',
-                );
+              if (ready) {
+                const ok =
+                  await target.webContents.executeJavaScript(
+                    '!!window.__cwbHost',
+                  );
+                if (!ok) throw new Error('HOST_NOT_READY');
+              }
             } else if (request.kind === 'stop') {
               disposing = true;
               if (target && !target.isDestroyed()) {
@@ -265,39 +268,59 @@ export function install(options: any) {
           throw new Error('WINDOW_ACTION_NOT_UNIQUE');
         const original = electron.BrowserWindow.getFocusedWindow(),
           created: any[] = [];
-        let captureError: any, fetchEnabled: Promise<any>;
+        let captureError: any, blockingSetup: Promise<any>;
         const capture = (_, window) => {
           try {
             created.push(window);
             if (created.length !== 1) return;
             target = window;
-            target.hide();
-            target.on('show', () => target.hide());
+            const rawHide = target.hide.bind(target);
+            target.setOpacity?.(0);
+            target.setFocusable?.(false);
+            target.setSkipTaskbar?.(true);
+            target.setIgnoreMouseEvents?.(true);
+            target.setBounds?.({ x: -32000, y: -32000, width: 1, height: 1 });
+            rawHide();
+            setImmediate(() => {
+              if (target && !target.isDestroyed()) rawHide();
+            });
+            for (const event of [
+              'show',
+              'ready-to-show',
+              'restore',
+              'focus',
+              'maximize',
+            ])
+              target.on(event, () => rawHide());
+            for (const method of [
+              'show',
+              'showInactive',
+              'focus',
+              'restore',
+              'maximize',
+            ])
+              target[method] = () => {};
             const wc = target.webContents;
             wc.setBackgroundThrottling(false);
             wc.debugger.attach('1.3');
-            wc.debugger.on('message', (_, method, params) => {
-              if (method !== 'Fetch.requestPaused') return;
-              wc.debugger
-                .sendCommand('Fetch.fulfillRequest', {
-                  requestId: params.requestId,
-                  responseCode: 200,
-                  responseHeaders: [
-                    { name: 'Content-Type', value: 'text/html; charset=utf-8' },
-                  ],
-                  body: Buffer.from(
-                    '<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>',
-                  ).toString('base64'),
-                })
-                .catch(() => {
-                  if (!stopped) fatal('FETCH_FAILED');
-                });
-            });
-            fetchEnabled = wc.debugger.sendCommand('Fetch.enable', {
-              patterns: [
-                { urlPattern: 'app://-/index.html*', resourceType: 'Document' },
-              ],
-            });
+            blockingSetup = (async () => {
+              await wc.debugger.sendCommand('Network.enable');
+              await wc.debugger.sendCommand('Network.setBlockedURLs', {
+                urls: [
+                  'app://-/assets/*',
+                  '*/assets/*',
+                  '*.js',
+                  '*.mjs',
+                  '*.css',
+                  '*.wasm',
+                ],
+              });
+              await wc.debugger.sendCommand('Page.enable');
+              await wc.debugger.sendCommand(
+                'Page.addScriptToEvaluateOnNewDocument',
+                { source: EARLY_CAPTURE },
+              );
+            })();
           } catch (error) {
             captureError = error;
           }
@@ -312,7 +335,7 @@ export function install(options: any) {
         if (created.length !== 1) throw new Error('WINDOW_CREATION_NOT_UNIQUE');
         if (original && !original.isDestroyed()) original.focus();
         const wc = target.webContents;
-        await fetchEnabled;
+        await blockingSetup;
         const bridgeReady = `!!window.electronBridge&&${JSON.stringify(syncMethods)}.every(name=>typeof window.electronBridge[name]==='function')`;
         const initialDeadline = Date.now() + 45000;
         while (
@@ -328,13 +351,6 @@ export function install(options: any) {
           `(()=>{const b=window.electronBridge;return {windowType:b.windowType,usesStagingWidgetSandbox:b.usesStagingWidgetSandbox,initialReducedMotionPreference:b.initialReducedMotionPreference,initialOpaqueWindowSurfaceEnabled:b.initialOpaqueWindowSurfaceEnabled,...Object.fromEntries(${JSON.stringify(syncMethods)}.map(name=>[name,b[name]()]))}})()`,
         );
         hostURL = 'app://-/index.html?cwbHost=' + options.instance;
-        await wc.debugger.sendCommand('Page.enable');
-        await wc.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', {
-          source: EARLY_CAPTURE,
-        });
-        await wc.debugger.sendCommand('Fetch.enable', {
-          patterns: [{ urlPattern: hostURL, resourceType: 'Document' }],
-        });
         await wc.loadURL(hostURL);
         const deadline = Date.now() + 45000;
         while (

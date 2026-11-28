@@ -16,21 +16,21 @@ const bundle = await build({
   external: ['node:http', 'node:crypto', 'ws'],
   define: {
     EARLY_CAPTURE: JSON.stringify('window.captureInstalled = true;'),
-    HOST_TRANSPORT: JSON.stringify('window.transportInstalled = true;'),
+    HOST_TRANSPORT: JSON.stringify(
+      'window.transportInstalled = true; window.__cwbHost = {};',
+    ),
   },
   write: false,
 });
 const shim = new vm.Script(bundle.outputFiles[0].text);
 const initialURL = 'app://-/index.html';
 const hostURL = initialURL + '?cwbHost=memory-test';
-const emptyHTML =
-  '<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>';
 
 async function flush() {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-function createEnvironment(t, { attachError } = {}) {
+function createEnvironment(t, { attachError, blockingError } = {}) {
   const events = [];
   const commands = [];
   const timers = new Set();
@@ -41,9 +41,9 @@ function createEnvironment(t, { attachError } = {}) {
   let loading = false;
   let url = '';
   let stopCalls = 0;
-  let resolveFetch;
-  const fetchEnabled = new Promise((resolve) => {
-    resolveFetch = resolve;
+  let resolveNetwork;
+  const networkEnabled = new Promise((resolve) => {
+    resolveNetwork = resolve;
   });
   const debuggerAPI = new EventEmitter();
   debuggerAPI.attached = false;
@@ -61,7 +61,9 @@ function createEnvironment(t, { attachError } = {}) {
   debuggerAPI.sendCommand = (method, params) => {
     commands.push({ method, params });
     events.push(method);
-    if (method === 'Fetch.enable' && commands.length === 1) return fetchEnabled;
+    if (method === 'Network.enable') return networkEnabled;
+    if (method === 'Network.setBlockedURLs' && blockingError)
+      return Promise.reject(blockingError);
     return Promise.resolve({});
   };
   const wc = new EventEmitter();
@@ -94,7 +96,21 @@ function createEnvironment(t, { attachError } = {}) {
   target.id = 2;
   target.webContents = wc;
   target.destroyed = false;
-  target.hide = () => events.push('hide');
+  target.hide = function () {
+    assert.equal(this, target);
+    events.push('hide');
+  };
+  for (const method of [
+    'setOpacity',
+    'setFocusable',
+    'setSkipTaskbar',
+    'setIgnoreMouseEvents',
+    'setBounds',
+  ])
+    target[method] = (value) =>
+      events.push([method, JSON.parse(JSON.stringify(value))]);
+  for (const method of ['show', 'showInactive', 'focus', 'restore', 'maximize'])
+    target[method] = () => events.push('target-' + method);
   target.isDestroyed = () => target.destroyed;
   target.destroy = () => {
     target.destroyed = true;
@@ -119,6 +135,9 @@ function createEnvironment(t, { attachError } = {}) {
             enabled: true,
             click() {
               app.emit('browser-window-created', {}, target);
+              target.restore();
+              target.show();
+              target.focus();
               events.push('initial-load');
               loading = true;
               url = initialURL;
@@ -137,6 +156,10 @@ function createEnvironment(t, { attachError } = {}) {
   server.close = () => events.push('server-close');
   class MemoryWebSocketServer extends EventEmitter {
     clients = new Set();
+    handleUpgrade(req, socket, head, callback) {
+      this.clients.add(socket);
+      callback(socket);
+    }
     close() {}
   }
   const modules = {
@@ -166,6 +189,7 @@ function createEnvironment(t, { attachError } = {}) {
       return timer;
     },
     clearTimeout: (timer) => timers.delete(timer),
+    setImmediate,
     setInterval: () => ({}),
     clearInterval: () => {},
   });
@@ -187,7 +211,34 @@ function createEnvironment(t, { attachError } = {}) {
     target,
     wc,
     stopCalls: () => stopCalls,
-    enableFetch: resolveFetch,
+    enableNetwork: resolveNetwork,
+    connect() {
+      const ws = new EventEmitter();
+      ws.readyState = 1;
+      ws.bufferedAmount = 0;
+      ws.messages = [];
+      ws.send = (message) => ws.messages.push(JSON.parse(message));
+      ws.close = (code, reason) => {
+        ws.readyState = 3;
+        ws.closeCode = code;
+        ws.closeReason = reason;
+        ws.emit('close');
+      };
+      ws.request = async (request) => {
+        ws.emit('message', Buffer.from(JSON.stringify(request)), false);
+        await flush();
+      };
+      server.emit(
+        'upgrade',
+        {
+          url: '/internal',
+          headers: { authorization: 'Bearer ' + 'a'.repeat(64) },
+        },
+        ws,
+        Buffer.alloc(0),
+      );
+      return ws;
+    },
     completeLoad({ withBridge = true, atURL = url } = {}) {
       loading = false;
       url = atURL;
@@ -204,38 +255,52 @@ function createEnvironment(t, { attachError } = {}) {
   };
 }
 
-test('initial load completes before host navigation and Fetch interception narrows', async (t) => {
+test('hidden window blocks assets before host navigation and waits for the bridge', async (t) => {
   const env = createEnvironment(t);
   await flush();
+  await flush();
   assert.deepEqual(env.events, [
+    ['setOpacity', 0],
+    ['setFocusable', false],
+    ['setSkipTaskbar', true],
+    ['setIgnoreMouseEvents', true],
+    ['setBounds', { x: -32000, y: -32000, width: 1, height: 1 }],
     'hide',
     'disable-throttling',
     'attach',
-    'Fetch.enable',
+    'Network.enable',
     'initial-load',
     'focus',
+    'hide',
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(env.commands)), [
     {
-      method: 'Fetch.enable',
-      params: {
-        patterns: [{ urlPattern: initialURL + '*', resourceType: 'Document' }],
-      },
+      method: 'Network.enable',
     },
   ]);
-  env.wc.debugger.emit('message', {}, 'Fetch.requestPaused', {
-    requestId: 'initial-document',
-  });
-  const fulfillment = env.commands.at(-1);
-  assert.equal(fulfillment.method, 'Fetch.fulfillRequest');
-  assert.equal(fulfillment.params.requestId, 'initial-document');
-  assert.equal(fulfillment.params.responseCode, 200);
-  assert.equal(
-    Buffer.from(fulfillment.params.body, 'base64').toString(),
-    emptyHTML,
-  );
-  env.enableFetch();
+  env.enableNetwork();
   await flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(env.commands)), [
+    { method: 'Network.enable' },
+    {
+      method: 'Network.setBlockedURLs',
+      params: {
+        urls: [
+          'app://-/assets/*',
+          '*/assets/*',
+          '*.js',
+          '*.mjs',
+          '*.css',
+          '*.wasm',
+        ],
+      },
+    },
+    { method: 'Page.enable' },
+    {
+      method: 'Page.addScriptToEvaluateOnNewDocument',
+      params: { source: 'window.captureInstalled = true;' },
+    },
+  ]);
   assert.equal(env.events.includes('host-load'), false);
   env.completeLoad({ withBridge: false });
   await env.poll();
@@ -248,18 +313,9 @@ test('initial load completes before host navigation and Fetch interception narro
   assert.ok(
     env.events.indexOf('configuration') < env.events.indexOf('host-load'),
   );
-  assert.deepEqual(
-    env.commands
-      .filter(({ method }) => method === 'Fetch.enable')
-      .map(({ params }) => params.patterns[0].urlPattern),
-    [initialURL + '*', hostURL],
-  );
-  assert.deepEqual(
-    env.commands.slice(-3).map(({ method }) => method),
-    ['Page.enable', 'Page.addScriptToEvaluateOnNewDocument', 'Fetch.enable'],
-  );
+  assert.equal(env.commands.length, 4);
   assert.equal(
-    env.commands.at(-2).params.source,
+    env.commands.at(-1).params.source,
     'window.captureInstalled = true;',
   );
   assert.equal(env.renderer.transportInstalled, undefined);
@@ -278,7 +334,67 @@ test('initial load completes before host navigation and Fetch interception narro
     ],
   );
   assert.equal(env.stopCalls(), 0);
+  assert.equal(
+    env.commands.some(({ method }) => method.startsWith('Fetch.')),
+    false,
+  );
   assert.equal(env.target.destroyed, false);
+  const ws = env.connect();
+  await ws.request({
+    kind: 'hello',
+    id: 'hello',
+    pid: 1,
+    shimInstanceId: 'memory-test',
+    protocolVersion: 1,
+  });
+  assert.equal(ws.messages.at(-1).value.ready, true);
+  await ws.request({ kind: 'probe', id: 'probe-ready' });
+  assert.equal(ws.messages.at(-1).id, 'probe-ready');
+  assert.equal(ws.messages.at(-1).value.ready, true);
+  vm.runInContext('window.__cwbHost = undefined;', env.renderer);
+  await ws.request({ kind: 'probe', id: 'probe-missing' });
+  assert.deepEqual(ws.messages.at(-1), {
+    kind: 'host-offline',
+    errorCode: 'HOST_NOT_READY',
+  });
+  assert.equal(ws.closeCode, 4010);
+  assert.equal(ws.closeReason, 'HOST_NOT_READY');
+});
+
+test('hidden window hides on visibility events and suppresses display methods', async (t) => {
+  const env = createEnvironment(t);
+  await flush();
+  env.target.hide = () => {
+    throw new Error('BOUND_HIDE_REQUIRED');
+  };
+  for (const event of [
+    'show',
+    'ready-to-show',
+    'restore',
+    'focus',
+    'maximize',
+  ]) {
+    const before = env.events.length;
+    env.target.emit(event);
+    assert.deepEqual(env.events.slice(before), ['hide'], event);
+  }
+  for (const method of [
+    'show',
+    'showInactive',
+    'focus',
+    'restore',
+    'maximize',
+  ]) {
+    const before = env.events.length;
+    assert.equal(env.target[method](), undefined);
+    assert.equal(env.events.length, before, method);
+  }
+  env.context.__cwbShimV1.stop();
+  assert.equal(env.target.destroyed, true);
+  assert.equal(env.wc.debugger.isAttached(), false);
+  assert.equal(env.context.__cwbShimV1, undefined);
+  env.enableNetwork();
+  await flush();
 });
 
 test('capture errors stay inside the shim and let the application continue loading', async (t) => {
@@ -287,6 +403,18 @@ test('capture errors stay inside the shim and let the application continue loadi
   assert.ok(env.events.includes('initial-load'));
   assert.equal(env.events.includes('host-load'), false);
   assert.equal(env.stopCalls(), 0);
+  assert.equal(env.target.destroyed, true);
+  assert.equal(env.context.__cwbShimV1, undefined);
+});
+
+test('asset blocking errors release the hidden window', async (t) => {
+  const env = createEnvironment(t, {
+    blockingError: new Error('BLOCKING_FAILED'),
+  });
+  await flush();
+  env.enableNetwork();
+  await flush();
+  assert.equal(env.events.includes('host-load'), false);
   assert.equal(env.target.destroyed, true);
   assert.equal(env.context.__cwbShimV1, undefined);
 });
