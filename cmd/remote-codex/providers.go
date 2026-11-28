@@ -31,7 +31,6 @@ func (a *application) snapshot() config.Config { a.mu.Lock(); defer a.mu.Unlock(
 func (a *application) prepareGateway(c config.Config) (*gateway.Gateway, error) {
 	_, generation := a.gateway.Load().Controllers.Status()
 	next := gateway.New(c, a.publicAuth, a.log, generation+1)
-	next.SetHostLifecycle(a.ensureHost, a.touchHostActivity, a.isHostStandby)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.client != nil {

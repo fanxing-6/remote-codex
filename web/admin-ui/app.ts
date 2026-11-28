@@ -111,11 +111,8 @@ function renderStatus(status: any) {
   $('gateway-lamp').className = 'good';
   $('host-state').textContent = status.shimConnected
     ? '已连接 · ' + status.appVersion
-    : status.hostStandby
-      ? '按需待机 · 零占用（远程访问时自动连接）'
-      : '已暂停 · 点击连接宿主以启用';
-  $('host-lamp').className =
-    status.shimConnected || status.hostStandby ? 'good' : '';
+    : '等待连接 · 请启动 ChatGPT';
+  $('host-lamp').className = status.shimConnected ? 'good' : '';
   $('controller-state').textContent = status.controllerActive
     ? (status.controllerDevice ?? '浏览器') +
       ' · 第 ' +
@@ -127,9 +124,7 @@ function renderStatus(status: any) {
   $('controller-lamp').className = status.controllerActive ? 'good' : '';
   $('build-id').textContent = status.assetBuildId
     ? 'assetBuildId · ' + status.assetBuildId.slice(0, 20)
-    : status.hostStandby
-      ? '按需连接后自动绑定资源'
-      : '资源将在连接宿主后绑定';
+    : '资源将在连接宿主后绑定';
   $('session-count').textContent = '活跃登录会话：' + status.sessions;
 }
 async function renderLogs() {

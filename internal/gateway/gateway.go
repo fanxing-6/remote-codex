@@ -89,46 +89,6 @@ type Gateway struct {
 	active         *claim
 	started        time.Time
 	trustedProxies []netip.Prefix
-	ensureHost     func(context.Context) error
-	touchActivity  func()
-	hostStandby    func() bool
-}
-
-func (g *Gateway) SetHostLifecycle(ensure func(context.Context) error, touch func(), standby func() bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.ensureHost, g.touchActivity, g.hostStandby = ensure, touch, standby
-}
-
-func (g *Gateway) HasActiveClients() bool {
-	owner, _ := g.Controllers.Status()
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return owner != "" || len(g.claims) > 0
-}
-
-func (g *Gateway) touchHostActivity() {
-	g.mu.Lock()
-	touch := g.touchActivity
-	g.mu.Unlock()
-	if touch != nil {
-		touch()
-	}
-}
-
-func (g *Gateway) wakeHost(ctx context.Context) error {
-	g.mu.Lock()
-	client, ensure := g.host, g.ensureHost
-	g.mu.Unlock()
-	if client == nil && ensure != nil {
-		if err := ensure(ctx); err != nil {
-			return err
-		}
-		g.touchHostActivity()
-	} else if client != nil {
-		g.touchHostActivity()
-	}
-	return nil
 }
 
 func New(c config.Config, store *auth.Store, log *logger.Logger, initialGeneration uint64) *Gateway {
@@ -218,8 +178,6 @@ func (g *Gateway) ClearHost() {
 	active := g.active
 	g.active = nil
 	g.host = nil
-	g.archive = nil
-	g.html = nil
 	g.mu.Unlock()
 	if active != nil {
 		active.close(protocol.HostUnavailable)
@@ -259,15 +217,11 @@ func JSON(w http.ResponseWriter, status int, value any) {
 func (g *Gateway) Health() map[string]any {
 	_, generation := g.Controllers.Status()
 	g.mu.Lock()
-	client, archive, hostStandby := g.host, g.archive, g.hostStandby
+	client, archive := g.host, g.archive
 	g.mu.Unlock()
-	standby := hostStandby != nil && hostStandby()
-	result := map[string]any{"platform": runtime.GOOS, "appVersion": "", "assetBuildId": "", "shimConnected": false, "hiddenWindowAlive": false, "hostStandby": standby, "activeControllerGeneration": generation, "uptimeSec": int(time.Since(g.started).Seconds()), "compatStatus": "host_offline"}
+	result := map[string]any{"platform": runtime.GOOS, "appVersion": "", "assetBuildId": "", "shimConnected": false, "hiddenWindowAlive": false, "activeControllerGeneration": generation, "uptimeSec": int(time.Since(g.started).Seconds()), "compatStatus": "host_offline"}
 	if runtime.GOOS == "windows" {
 		result["compatStatus"] = host.WindowsStatus
-	}
-	if client == nil && standby {
-		result["compatStatus"] = "standby"
 	}
 	if client != nil && archive != nil {
 		result["appVersion"] = client.Endpoint.AppVersion
@@ -421,10 +375,6 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		JSON(w, 200, map[string]bool{"ok": true})
 		return
 	}
-	if slices.Contains([]string{"/livez", "/auth/login", "/auth/login.js", "/auth/login.css", "/auth/csrf", "/auth/ticket"}, r.URL.Path) {
-		http.Error(w, "METHOD_REJECTED", 405)
-		return
-	}
 	session := g.session(r)
 	if session == nil {
 		if r.Method == "GET" && (r.URL.Path == "/" || r.URL.Path == "/index.html") {
@@ -471,10 +421,6 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (g *Gateway) acquire(w http.ResponseWriter, r *http.Request, session *auth.Session, takeover bool) {
-	if err := g.wakeHost(r.Context()); err != nil {
-		http.Error(w, "HOST_UNAVAILABLE", 503)
-		return
-	}
 	g.mu.Lock()
 	if len(g.claims) >= 1024 {
 		g.mu.Unlock()
@@ -546,7 +492,6 @@ func (g *Gateway) acquire(w http.ResponseWriter, r *http.Request, session *auth.
 			if err := g.Controllers.Release(item.id, item.generation); err != nil {
 				g.Log.Add(logger.Event{Event: "host_idle_failed", ErrorCode: "HOST_IDLE_FAILED", Generation: item.generation})
 			}
-			g.touchHostActivity()
 			g.mu.Lock()
 			delete(g.claims, item.id)
 			g.mu.Unlock()
@@ -589,7 +534,6 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 	if err != nil {
 		return
 	}
-	g.touchHostActivity()
 	item.timer.Stop()
 	defer func() {
 		connection.Close()
@@ -597,7 +541,6 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 		if err := g.Controllers.Release(id, item.generation); err != nil {
 			g.Log.Add(logger.Event{Event: "host_idle_failed", ErrorCode: "HOST_IDLE_FAILED", Generation: item.generation})
 		}
-		g.touchHostActivity()
 		g.mu.Lock()
 		delete(g.claims, id)
 		if g.active == item {
@@ -607,14 +550,7 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 	}()
 	connection.SetReadLimit(protocol.MaxFrame)
 	connection.SetReadDeadline(time.Now().Add(60 * time.Second))
-	connection.SetPongHandler(func(string) error {
-		g.touchHostActivity()
-		return connection.SetReadDeadline(time.Now().Add(60 * time.Second))
-	})
-	connection.SetPingHandler(func(data string) error {
-		g.touchHostActivity()
-		return connection.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
-	})
+	connection.SetPongHandler(func(string) error { return connection.SetReadDeadline(time.Now().Add(60 * time.Second)) })
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -625,7 +561,6 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 			case <-done:
 				return
 			case <-ticker.C:
-				g.touchHostActivity()
 				if err := connection.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 					code := "WS_PING_FAILED"
 					var network net.Error
@@ -704,7 +639,6 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 			g.Log.Add(logger.Event{Event: "browser_ws_closed", ErrorCode: code, Status: status, Generation: item.generation})
 			return
 		}
-		g.touchHostActivity()
 		if kind == websocket.TextMessage {
 			var control protocol.Envelope
 			if json.Unmarshal(data, &control) != nil || control.Kind != "probe" {
@@ -733,10 +667,6 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 	}
 }
 func (g *Gateway) static(w http.ResponseWriter, r *http.Request, session *auth.Session) {
-	if err := g.wakeHost(r.Context()); err != nil {
-		http.Error(w, "HOST_UNAVAILABLE", 503)
-		return
-	}
 	g.mu.Lock()
 	client, archive, html := g.host, g.archive, g.html
 	g.mu.Unlock()
