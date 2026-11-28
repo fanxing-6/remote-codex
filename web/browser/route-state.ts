@@ -13,10 +13,7 @@ export function routeForThreadKey(value: string, kind?: string | null) {
   return null;
 }
 
-export function visibleConversationRoute(
-  document: Document,
-  currentRoute: string | null,
-) {
+export function visibleConversationRoute(document: Document) {
   const activeRow = document.querySelector(
     '[data-app-action-sidebar-thread-active="true"][data-app-action-sidebar-thread-id]',
   );
@@ -28,7 +25,6 @@ export function visibleConversationRoute(
     );
     if (route) return route;
   }
-  if (currentRoute?.startsWith('/local/')) return null;
   for (const attribute of [
     'data-chatgpt-selection-conversation-id',
     'data-above-composer-conversation-id',
@@ -51,4 +47,36 @@ export function visibleConversationRoute(
     ?.getAttribute('data-sidebar-chatgpt-conversation-key');
   if (chat?.startsWith('chatgpt:conversation:')) return routeForThreadKey(chat);
   return null;
+}
+
+export function clickedConversationRoute(target: Element) {
+  const chat = target.closest('[data-sidebar-chatgpt-conversation-key]');
+  const key = chat?.getAttribute('data-sidebar-chatgpt-conversation-key');
+  if (key && key.length <= 256) return routeForThreadKey(key);
+  const row = target.closest('[data-app-action-sidebar-thread-row]');
+  const id = row?.getAttribute('data-app-action-sidebar-thread-id');
+  if (id && id.length <= 256)
+    return routeForThreadKey(
+      id,
+      row?.getAttribute('data-app-action-sidebar-thread-kind'),
+    );
+  return null;
+}
+
+export function rememberConversationRoute(route: string) {
+  if (
+    typeof route !== 'string' ||
+    !route.startsWith('/') ||
+    route.startsWith('//') ||
+    route.length > 2048
+  )
+    throw new Error('ROUTE_INVALID');
+  const conversation = route.match(
+    /^\/(?:g\/[^/?#]+\/)?c\/([a-zA-Z0-9_-]{16,256})\/?$/,
+  );
+  if (conversation) route = '/c/' + conversation[1];
+  const url = new URL(location.href);
+  if (url.searchParams.get('initialRoute') === route) return;
+  url.searchParams.set('initialRoute', route);
+  history.replaceState(history.state, '', url);
 }

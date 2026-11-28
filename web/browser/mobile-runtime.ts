@@ -1,3 +1,5 @@
+import { installFloatingViewport } from "./floating-viewport";
+
 export const mobileBrowser =
   /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
   (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
@@ -6,22 +8,22 @@ export function isTextEditable(element: unknown): boolean {
   if (element instanceof HTMLTextAreaElement) return true;
   if (element instanceof HTMLInputElement)
     return ![
-      'button',
-      'checkbox',
-      'radio',
-      'file',
-      'hidden',
-      'image',
-      'range',
-      'reset',
-      'submit',
-      'color',
+      "button",
+      "checkbox",
+      "radio",
+      "file",
+      "hidden",
+      "image",
+      "range",
+      "reset",
+      "submit",
+      "color",
     ].includes(element.type);
   return (
     element instanceof HTMLElement &&
     (element.isContentEditable ||
-      ['', 'true', 'plaintext-only'].includes(
-        element.getAttribute('contenteditable') ?? 'false',
+      ["", "true", "plaintext-only"].includes(
+        element.getAttribute("contenteditable") ?? "false",
       ))
   );
 }
@@ -30,9 +32,9 @@ function installMobileFocusGuard() {
   const nativeFocus = HTMLElement.prototype.focus;
   const nativeBlur = HTMLElement.prototype.blur;
   const composerSelector =
-    '[data-codex-composer], [data-codex-composer-root], [data-composer-surface-variant]';
+    "[data-codex-composer], [data-codex-composer-root], [data-composer-surface-variant]";
   const controlSelector =
-    'button, a, label, select, input, summary, [role=button], [role=link], [role=menu], [role=menuitem], [role=listbox], [role=option], [role=combobox], [role=tab], [role=checkbox], [role=radio], [role=switch], [role=slider], [contenteditable=false]';
+    "button, a, label, select, input, summary, [role=button], [role=link], [role=menu], [role=menuitem], [role=listbox], [role=option], [role=combobox], [role=tab], [role=checkbox], [role=radio], [role=switch], [role=slider], [contenteditable=false]";
   let intent: HTMLElement | null = null;
   let intentAt = -Infinity;
   let tabUntil = -Infinity;
@@ -73,7 +75,7 @@ function installMobileFocusGuard() {
     let editable: HTMLElement | null = target;
     while (editable && !isTextEditable(editable))
       editable = editable.parentElement;
-    const label = target.closest('label');
+    const label = target.closest("label");
     const control = target.closest(controlSelector);
     const composer = target.closest<HTMLElement>(composerSelector);
     const next =
@@ -94,15 +96,15 @@ function installMobileFocusGuard() {
     intentAt = performance.now();
     tabUntil = -Infinity;
   }
-  for (const type of ['pointerdown', 'touchstart', 'click'])
+  for (const type of ["pointerdown", "touchstart", "click"])
     document.addEventListener(type, interaction, true);
   document.addEventListener(
-    'keydown',
+    "keydown",
     (event) => {
       if (!event.isTrusted) return;
       clearIntent();
       if (
-        event.key === 'Tab' &&
+        event.key === "Tab" &&
         !event.altKey &&
         !event.ctrlKey &&
         !event.metaKey
@@ -130,7 +132,7 @@ function installMobileFocusGuard() {
   };
   // focusin 已发生焦点切换，使用授权记录判断原生 autofocus。
   document.addEventListener(
-    'focusin',
+    "focusin",
     (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement) || !isTextEditable(target)) return;
@@ -143,7 +145,7 @@ function installMobileFocusGuard() {
     true,
   );
   document.addEventListener(
-    'focusout',
+    "focusout",
     (event) => {
       if (
         !(event.target instanceof HTMLElement) ||
@@ -165,16 +167,17 @@ function installMobileFocusGuard() {
     },
     true,
   );
-  window.addEventListener('blur', dismiss);
-  document.addEventListener('visibilitychange', dismiss, true);
+  window.addEventListener("blur", dismiss);
+  document.addEventListener("visibilitychange", dismiss, true);
   return dismiss;
 }
 
 export function installMobileRuntime() {
   if (!mobileBrowser) return;
+  installFloatingViewport();
   const dismissFocus = installMobileFocusGuard();
   const element = document.documentElement;
-  element.dataset.cwbMobile = 'true';
+  element.dataset.cwbMobile = "true";
   const viewport = window.visualViewport;
   let maximumHeight = window.innerHeight;
   let previousWidth = window.innerWidth;
@@ -191,45 +194,45 @@ export function installMobileRuntime() {
     const editing = isTextEditable(document.activeElement);
     const keyboard = !!editing && maximumHeight - height > 100;
     if (
-      element.dataset.cwbKeyboard === 'true' &&
+      element.dataset.cwbKeyboard === "true" &&
       !keyboard &&
       editing &&
       !widthChanged
     )
       dismissFocus();
     element.dataset.cwbKeyboard = String(keyboard);
-    element.style.setProperty('--cwb-vvh', `${height}px`);
-    element.style.setProperty('--cwb-vv-top', `${viewport?.offsetTop ?? 0}px`);
+    element.style.setProperty("--cwb-vvh", `${height}px`);
+    element.style.setProperty("--cwb-vv-top", `${viewport?.offsetTop ?? 0}px`);
     if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
   }
   function schedule() {
     if (!frame) frame = requestAnimationFrame(syncViewport);
   }
-  viewport?.addEventListener('resize', schedule);
-  viewport?.addEventListener('scroll', schedule);
-  window.addEventListener('resize', schedule);
-  window.addEventListener('scroll', schedule, { passive: true });
-  document.addEventListener('focusin', schedule);
-  document.addEventListener('focusout', schedule);
+  viewport?.addEventListener("resize", schedule);
+  viewport?.addEventListener("scroll", schedule);
+  window.addEventListener("resize", schedule);
+  window.addEventListener("scroll", schedule, { passive: true });
+  document.addEventListener("focusin", schedule);
+  document.addEventListener("focusout", schedule);
   syncViewport();
 
   if (!/Android/i.test(navigator.userAgent)) return;
   function prepare(input: HTMLInputElement) {
-    if (input.type !== 'file') return;
-    const label = input.getAttribute('aria-label') ?? '';
+    if (input.type !== "file") return;
+    const label = input.getAttribute("aria-label") ?? "";
     const camera =
-      input.hasAttribute('capture') &&
+      input.hasAttribute("capture") &&
       /拍照|相机|camera|take (?:a )?photo/i.test(label);
     const photos =
-      !input.hasAttribute('capture') &&
+      !input.hasAttribute("capture") &&
       /照片|图片|相册|photo|media/i.test(label) &&
       input.accept
-        .split(',')
+        .split(",")
         .every((type) => /^(image|video)\/(\*|[\w.+-]+)$/i.test(type.trim()));
     if (camera || photos) return;
-    // HyperOS 通过文档 MIME 类型进入文件管理器。
-    input.setAttribute('accept', 'application/*,text/*');
-    input.removeAttribute('capture');
+    // Android 浏览器通过文档 MIME 类型进入文件管理器。
+    input.setAttribute("accept", "application/*,text/*");
+    input.removeAttribute("capture");
   }
   const click = HTMLElement.prototype.click;
   HTMLElement.prototype.click = function () {
@@ -244,12 +247,12 @@ export function installMobileRuntime() {
     };
   // 捕获标签激活及用户直接点击，保留原始事件和 React onChange。
   document.addEventListener(
-    'click',
+    "click",
     (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
       if (target instanceof HTMLInputElement) prepare(target);
-      const label = target.closest('label');
+      const label = target.closest("label");
       if (label?.control instanceof HTMLInputElement) prepare(label.control);
     },
     true,

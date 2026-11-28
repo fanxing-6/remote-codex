@@ -101,6 +101,9 @@ func RewriteHTML(source []byte, origin string) ([]byte, error) {
 					if err = directives.AddDirective(csp.Directive{Name: "connect-src", Value: []string{scheme + parsed.Host}}); err != nil {
 						return err
 					}
+					if err = directives.AddDirective(csp.Directive{Name: "frame-src", Value: []string{"'self'"}}); err != nil {
+						return err
+					}
 					node.Attr[i].Val = directives.String()
 					found = true
 				}

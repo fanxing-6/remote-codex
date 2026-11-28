@@ -66,7 +66,7 @@ func compressAsset(source []byte) []byte {
 
 func rewrittenAsset(name string) bool {
 	switch name {
-	case "index.html", "cwb/browser.js", "cwb/mobile.css", browserEntryAsset, browserComposerAsset:
+	case "index.html", "cwb/browser.js", "cwb/mobile.css", browserEntryAsset, browserComposerAsset, browserRouteAsset, browserDILFrameAsset, "assets/async/584602.d4ff4f180f.js", "assets/async/893680.05fde0ce2a.js":
 		return true
 	}
 	return false

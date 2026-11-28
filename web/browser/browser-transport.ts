@@ -11,8 +11,16 @@ import {
 } from '../shared';
 import { banner } from './overlay-ui';
 import { installMobileRuntime, mobileBrowser } from './mobile-runtime';
-import { routeForThreadKey, visibleConversationRoute } from './route-state';
+import {
+  clickedConversationRoute,
+  visibleConversationRoute,
+  rememberConversationRoute,
+} from './route-state';
+import { BridgeReplay } from './bridge-replay';
+import { isGatewayDILRunner } from './dil-runtime';
+import { initializeTabSession } from './tab-session';
 installMobileRuntime();
+initializeTabSession();
 const root = window as any,
   configuration = root.__cwbConfiguration;
 const initialRoute = document.createElement('meta');
@@ -27,6 +35,8 @@ const ports = new Map<string, MessagePort>(),
   themes = new Set<Function>();
 const closedPorts = new Set<string>();
 const diagnostics: any = { ports: {}, windowTypes: [], calls: {} };
+const replay = new BridgeReplay();
+let ownedClaim: { id: string; generation: number } | undefined;
 let generation = 0,
   sequence = 0,
   connected = false,
@@ -35,32 +45,21 @@ let generation = 0,
   socket: WebSocket;
 let recovering = false,
   recoveryTimer: any,
+  probeTimer: any,
   lastClose = 0;
 function rememberRoute(route: string) {
-  const url = new URL(location.href);
-  if (url.searchParams.get('initialRoute') === route) return;
-  url.searchParams.set('initialRoute', route);
-  history.replaceState(history.state, '', url);
+  rememberConversationRoute(route);
 }
 function rememberConversation() {
-  const route = visibleConversationRoute(
-    document,
-    new URL(location.href).searchParams.get('initialRoute'),
-  );
+  const route = visibleConversationRoute(document);
   if (route) rememberRoute(route);
 }
 document.addEventListener(
   'click',
   (event) => {
-    const row = (event.target as Element)?.closest(
-      '[data-app-action-sidebar-thread-row]',
-    );
-    const kind = row?.getAttribute('data-app-action-sidebar-thread-kind'),
-      id = row?.getAttribute('data-app-action-sidebar-thread-id');
-    if (id && id.length <= 256) {
-      const route = routeForThreadKey(id, kind);
-      if (route) rememberRoute(route);
-    }
+    if (!(event.target instanceof Element)) return;
+    const route = clickedConversationRoute(event.target);
+    if (route) rememberRoute(route);
   },
   true,
 );
@@ -110,15 +109,22 @@ function recover() {
         banner('资源版本已变化，请重启 ChatGPT 后刷新。');
         return;
       }
-      location.reload();
-      return;
+      if (
+        ownedClaim &&
+        health.activeControllerGeneration === ownedClaim.generation
+      ) {
+        if (!socket || socket.readyState >= WebSocket.CLOSING)
+          connect(ownedClaim);
+      } else if (ownedClaim) {
+        location.reload();
+      } else await acquire();
     } catch {
       banner('正在等待网络恢复。在途操作状态未知，请确认回读结果。');
     } finally {
       recovering = false;
       if (!stopped && !connected) recover();
     }
-  }, 1500);
+  }, 500);
 }
 let resolveReady: () => void, rejectReady: (error: Error) => void;
 const ready = new Promise<void>((resolve, reject) => {
@@ -155,16 +161,16 @@ function dispose() {
   themes.clear();
 }
 function raw(message: any) {
-  if (!connected || socket.readyState !== WebSocket.OPEN)
-    throw new Error('CONNECTION_UNAVAILABLE');
+  if (stopped) throw new Error('CONNECTION_UNAVAILABLE');
   assertSerializable(message);
   const bytes = codec.encode({ ...message, generation });
   if (
     bytes.length > maxFrame ||
-    socket.bufferedAmount + bytes.length > maxQueue
+    (socket?.bufferedAmount ?? 0) + bytes.length > maxQueue
   )
     throw new Error('QUEUE_LIMIT');
-  socket.send(bytes);
+  const frame = replay.enqueue(bytes);
+  if (connected && socket.readyState === WebSocket.OPEN) socket.send(frame);
 }
 async function send(message: any) {
   await ready;
@@ -199,7 +205,7 @@ function attach(id: string, port: MessagePort, channelType: string) {
       socket.close(4008, 'PORT_LIMIT');
       return;
     }
-    if (connected) raw({ kind: 'port-close', portId: id, channelType });
+    if (!stopped) raw({ kind: 'port-close', portId: id, channelType });
   });
 }
 function call(method: string, ...args: any[]) {
@@ -254,13 +260,7 @@ async function acquire() {
   if (reserved) {
     claim = JSON.parse(reserved);
   } else {
-    const navigation = performance.getEntriesByType(
-      'navigation',
-    )[0] as PerformanceNavigationTiming;
-    const resume =
-      navigation?.type === 'reload'
-        ? sessionStorage.getItem('cwb-owned-claim')
-        : null;
+    const resume = sessionStorage.getItem('cwb-owned-claim');
     const response = await fetch('/api/controller', {
       method: 'POST',
       headers: {
@@ -281,22 +281,46 @@ async function acquire() {
   }
   generation = claim.generation;
   sessionStorage.setItem('cwb-owned-claim', claim.id);
-  socket = new WebSocket(
-    `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/bridge`,
-    ['cwb.v1', 'claim.' + claim.id],
+  ownedClaim = claim;
+  connect(claim);
+}
+function connect(claim: { id: string; generation: number }) {
+  const current = new WebSocket(
+    `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/bridge?ack=${replay.received}`,
+    ['cwb.v2', 'claim.' + claim.id],
   );
+  socket = current;
   socket.binaryType = 'arraybuffer';
   socket.onopen = () => {
-    connected = true;
-    resolveReady();
+    if (socket !== current) return;
   };
   socket.onmessage = (event) => {
+    if (socket !== current) return;
     if (typeof event.data === 'string') {
       const control = JSON.parse(event.data);
-      if (control.kind === 'pong') return;
+      if (control.kind === 'pong') {
+        clearTimeout(probeTimer);
+        document.getElementById('cwb-status')?.remove();
+        return;
+      }
+      if (control.kind === 'ack') {
+        replay.acknowledge(control.sequence);
+        return;
+      }
+      if (control.kind === 'ready') {
+        replay.acknowledge(control.received);
+        for (const frame of replay.replay()) current.send(frame);
+        connected = true;
+        document.getElementById('cwb-status')?.remove();
+        resolveReady();
+        return;
+      }
       throw new Error('CONTROL_UNKNOWN');
     }
-    const message = codec.decode(new Uint8Array(event.data));
+    replay.receive(event.data, (payload) => receive(codec.decode(payload)));
+    current.send(JSON.stringify({ kind: 'ack', sequence: replay.received }));
+  };
+  function receive(message: any) {
     if (message.generation !== generation) return;
     if (message.kind === 'port-data') {
       const port = ports.get(message.portId);
@@ -349,11 +373,14 @@ async function acquire() {
       theme = message.value;
       for (const listener of themes) listener();
     } else throw new Error('MESSAGE_UNKNOWN');
-  };
+  }
   socket.onclose = (event) => {
+    if (socket !== current) return;
+    clearTimeout(probeTimer);
     lastClose = event.code;
-    dispose();
+    connected = false;
     if (event.code === 4009) {
+      dispose();
       stopped = true;
       if (sessionStorage.getItem('cwb-owned-claim') === claim.id)
         sessionStorage.removeItem('cwb-owned-claim');
@@ -361,11 +388,13 @@ async function acquire() {
       return;
     }
     if (event.code === 4010 || event.code === 4001) {
+      dispose();
       stopped = true;
       banner('宿主或登录会话不可用，请确认状态后重新登录。');
       return;
     }
     if (event.code === 4008) {
+      dispose();
       stopped = true;
       banner('通信协议检查未通过，请在控制面板运行诊断。');
       return;
@@ -430,9 +459,20 @@ document.documentElement.dataset.codexWindowType = 'electron';
 document.documentElement.dataset.codexOs = 'darwin';
 document.documentElement.dataset.theme = theme;
 const probe = () => {
+  clearTimeout(probeTimer);
   if (document.visibilityState !== 'visible') return;
-  if (connected) socket.send(JSON.stringify({ kind: 'probe' }));
-  else recover();
+  if (connected && socket.readyState === WebSocket.OPEN) {
+    const current = socket;
+    current.send(JSON.stringify({ kind: 'probe' }));
+    probeTimer = setTimeout(() => {
+      if (
+        socket === current &&
+        connected &&
+        document.visibilityState === 'visible'
+      )
+        current.close(1000, 'RESUME_PROBE_TIMEOUT');
+    }, 8000);
+  } else recover();
 };
 document.addEventListener('visibilitychange', probe);
 window.addEventListener('online', probe);
@@ -443,17 +483,17 @@ function offline() {
     (!connected && socket.readyState >= WebSocket.CLOSING)
   )
     return;
-  dispose();
-  if (socket.readyState < WebSocket.CLOSING)
-    socket.close(1000, 'NETWORK_OFFLINE');
-  banner('连接中断。在途操作状态未知，请确认回读结果。');
-  recover();
+  banner('网络暂时不可用，正在等待连接恢复。');
+  if (!connected) recover();
 }
 window.addEventListener('offline', offline);
 setInterval(() => {
   if (!navigator.onLine) offline();
 }, 2000);
 root.__cwbRuntime = {
+  isDILRunner: (url: URL) =>
+    isGatewayDILRunner(url, location.origin, configuration.dilBasePath),
+  rememberRoute,
   ready,
   diagnostics,
   mobile: mobileBrowser,

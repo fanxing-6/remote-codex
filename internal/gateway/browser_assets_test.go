@@ -51,8 +51,30 @@ func TestBrowserAttachmentAsset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(entry, []byte(`e===839700?"?cwb=`+browserAssetRevision)) {
+	if !bytes.Contains(entry, []byte(`[839700,191628,584602,893680,882456].includes(e)?"?cwb=`+browserAssetRevision)) {
 		t.Fatal("browser attachment cache revision missing")
+	}
+	for _, name := range []string{browserRouteAsset, browserDILFrameAsset, "assets/async/584602.d4ff4f180f.js", "assets/async/893680.05fde0ce2a.js"} {
+		source, err := archive.Read(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output, err := rewriteBrowserAsset(name, source)
+		if err != nil {
+			t.Fatal(name, err)
+		}
+		if bytes.Equal(output, source) {
+			t.Fatal("adapted asset unchanged", name)
+		}
+		if name == browserRouteAsset && !bytes.Contains(output, []byte("window.__cwbRuntime.rememberRoute(G)")) {
+			t.Fatal("router notification missing")
+		}
+		if name == browserDILFrameAsset && !bytes.Contains(output, []byte("window.__cwbRuntime.isDILRunner(t)")) {
+			t.Fatal("sandbox runner validation missing")
+		}
+		if name != browserRouteAsset && name != browserDILFrameAsset && !bytes.Contains(output, []byte("window.__cwbConfiguration.dilBasePath")) {
+			t.Fatal("DIL proxy reference missing")
+		}
 	}
 	index, err := archive.Read("index.html")
 	if err != nil {

@@ -26,7 +26,8 @@ export function install(options: any) {
     queued = 0,
     configuration: any,
     errorCode = '',
-    hostURL = '';
+    hostURL = '',
+    applicationScripts = new Set<string>();
   const initialWindows = electron.BrowserWindow.getAllWindows().map(
     (w) => w.id,
   );
@@ -48,6 +49,12 @@ export function install(options: any) {
     assetBuildId: options.assetBuildId,
     windowId: target?.id,
     hiddenWindowAlive: !!target && !target.isDestroyed(),
+    hiddenWindow: {
+      opacity: target && !target.isDestroyed() ? target.getOpacity() : 0,
+      visible: !!target && !target.isDestroyed() && target.isVisible(),
+      scriptCount:
+        target && !target.isDestroyed() ? applicationScripts.size : 0,
+    },
     initialWindows,
     capabilities: [
       'connect-app-host',
@@ -303,6 +310,17 @@ export function install(options: any) {
             const wc = target.webContents;
             wc.setBackgroundThrottling(false);
             wc.debugger.attach('1.3');
+            wc.on('did-start-navigation', (_, _url, _inPlace, isMainFrame) => {
+              if (isMainFrame) applicationScripts.clear();
+            });
+            // 统计真正载入的应用脚本，排除 preload 和运行时桥接代码。
+            wc.debugger.on('message', (_, method, params) => {
+              if (
+                method === 'Debugger.scriptParsed' &&
+                /^app:\/\/[^/]+\/assets\/.+\.m?js(?:[?#]|$)/.test(params.url)
+              )
+                applicationScripts.add(params.scriptId);
+            });
             blockingSetup = (async () => {
               await wc.debugger.sendCommand('Network.enable');
               await wc.debugger.sendCommand('Network.setBlockedURLs', {
@@ -315,6 +333,7 @@ export function install(options: any) {
                   '*.wasm',
                 ],
               });
+              await wc.debugger.sendCommand('Debugger.enable');
               await wc.debugger.sendCommand('Page.enable');
               await wc.debugger.sendCommand(
                 'Page.addScriptToEvaluateOnNewDocument',

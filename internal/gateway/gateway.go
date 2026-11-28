@@ -41,22 +41,35 @@ type claim struct {
 	device      string
 	started     time.Time
 	log         *logger.Logger
+	journal     *bridgeJournal
+	activated   bool
+	onRevoked   func()
 }
 
 func (c *claim) write(kind int, data []byte) error {
+	c.mu.Lock()
+	socket := c.socket
+	c.mu.Unlock()
+	return c.writeTo(socket, kind, data)
+}
+
+func (c *claim) writeTo(socket *websocket.Conn, kind int, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
+	if socket == nil {
+		return net.ErrClosed
+	}
 	level := flate.BestSpeed
 	if len(data) >= 64<<10 {
 		level = flate.DefaultCompression
 	}
-	if err := c.socket.SetCompressionLevel(level); err != nil {
+	if err := socket.SetCompressionLevel(level); err != nil {
 		return err
 	}
-	if err := c.socket.SetWriteDeadline(time.Now().Add(45 * time.Second)); err != nil {
+	if err := socket.SetWriteDeadline(time.Now().Add(45 * time.Second)); err != nil {
 		return err
 	}
-	return c.socket.WriteMessage(kind, data)
+	return socket.WriteMessage(kind, data)
 }
 
 func (c *claim) close(code int) {
@@ -66,15 +79,22 @@ func (c *claim) close(code int) {
 		return
 	}
 	c.revoked = true
+	if c.timer != nil {
+		c.timer.Stop()
+	}
 	socket := c.socket
+	generation := c.generation
 	c.mu.Unlock()
+	if c.onRevoked != nil {
+		go c.onRevoked()
+	}
 	if socket != nil {
 		if c.log != nil {
-			c.log.Add(logger.Event{Event: "browser_ws_end", Status: code, Generation: c.generation})
+			c.log.Add(logger.Event{Event: "browser_ws_end", Status: code, Generation: generation})
 		}
 		if err := socket.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, "CONTROL_ENDED"), time.Now().Add(12*time.Second)); err != nil {
-			if c.log != nil {
-				c.log.Add(logger.Event{Event: "browser_ws_closed", ErrorCode: "WS_CLOSE_FRAME_FAILED", Generation: c.generation})
+			if c.log != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, websocket.ErrCloseSent) {
+				c.log.Add(logger.Event{Event: "browser_ws_closed", ErrorCode: "WS_CLOSE_FRAME_FAILED", Generation: generation})
 			}
 			socket.Close()
 			return
@@ -101,6 +121,7 @@ type Gateway struct {
 	touchActivity  func()
 	hostStandby    func() bool
 	assets         gzipAssetCache
+	dil            dilAssets
 }
 
 func (g *Gateway) SetHostLifecycle(ensure func(context.Context) error, touch func(), standby func() bool) {
@@ -247,6 +268,12 @@ func (g *Gateway) forward(data []byte) {
 	if active.revoked {
 		return
 	}
+	if active.journal != nil {
+		if err := active.journal.append(data); err != nil {
+			go active.close(1009)
+		}
+		return
+	}
 	if active.bytes+len(data) > protocol.MaxQueue {
 		go active.close(1009)
 		return
@@ -272,7 +299,7 @@ func (g *Gateway) Health() map[string]any {
 	client, archive, hostStandby := g.host, g.archive, g.hostStandby
 	g.mu.Unlock()
 	standby := hostStandby != nil && hostStandby()
-	result := map[string]any{"platform": runtime.GOOS, "appVersion": "", "assetBuildId": "", "shimConnected": false, "hiddenWindowAlive": false, "hostStandby": standby, "activeControllerGeneration": generation, "uptimeSec": int(time.Since(g.started).Seconds()), "compatStatus": "host_offline"}
+	result := map[string]any{"platform": runtime.GOOS, "appVersion": "", "assetBuildId": "", "shimConnected": false, "hiddenWindowAlive": false, "hiddenWindow": map[string]any{"opacity": 0, "visible": false, "scriptCount": 0}, "hostStandby": standby, "activeControllerGeneration": generation, "uptimeSec": int(time.Since(g.started).Seconds()), "compatStatus": "host_offline"}
 	if runtime.GOOS == "windows" {
 		result["compatStatus"] = host.WindowsStatus
 	}
@@ -282,9 +309,10 @@ func (g *Gateway) Health() map[string]any {
 	if client != nil && archive != nil {
 		result["appVersion"] = client.Endpoint.AppVersion
 		snapshot := client.Snapshot()
-		result["assetBuildId"] = archive.BuildID
+		result["assetBuildId"] = browserBuildID(archive.BuildID)
 		result["shimConnected"] = snapshot["ready"] == true
 		result["hiddenWindowAlive"] = snapshot["hiddenWindowAlive"]
+		result["hiddenWindow"] = snapshot["hiddenWindow"]
 		result["compatStatus"] = "macos_local_verified"
 		if runtime.GOOS == "windows" {
 			result["compatStatus"] = host.WindowsStatus
@@ -321,6 +349,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "origin")
 	if !slices.Contains(g.Config.AllowedHosts, r.Host) {
 		http.Error(w, "HOST_REJECTED", 403)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, dilPrefix) {
+		g.serveDIL(w, r)
 		return
 	}
 	stateChange := r.Method != "GET" && r.Method != "HEAD"
@@ -505,7 +537,8 @@ func (g *Gateway) acquire(w http.ResponseWriter, r *http.Request, session *auth.
 	} else if strings.Contains(agent, "Windows") {
 		device = "Windows"
 	}
-	item := &claim{id: auth.Random(), session: session.ID, device: device, started: time.Now(), log: g.Log}
+	item := &claim{id: auth.Random(), session: session.ID, device: device, started: time.Now(), log: g.Log, journal: newBridgeJournal()}
+	item.onRevoked = func() { g.releaseClaim(item) }
 	var request struct {
 		Resume string `json:"resume"`
 	}
@@ -541,13 +574,16 @@ func (g *Gateway) acquire(w http.ResponseWriter, r *http.Request, session *auth.
 		http.Error(w, "CONTROLLER_UNAVAILABLE", status)
 		return
 	}
+	item.mu.Lock()
 	item.generation = generation
-	g.mu.Lock()
-	g.claims[item.id] = item
-	g.mu.Unlock()
+	item.mu.Unlock()
+	item.mu.Lock()
 	item.timer = time.AfterFunc(20*time.Second, func() {
 		item.mu.Lock()
 		unbound := item.socket == nil
+		if unbound {
+			item.revoked = true
+		}
 		item.mu.Unlock()
 		if unbound {
 			if err := g.Controllers.Release(item.id, item.generation); err != nil {
@@ -559,6 +595,19 @@ func (g *Gateway) acquire(w http.ResponseWriter, r *http.Request, session *auth.
 			g.mu.Unlock()
 		}
 	})
+	item.mu.Unlock()
+	if err := g.Controllers.With(item.id, generation, func() error {
+		g.mu.Lock()
+		g.claims[item.id] = item
+		g.mu.Unlock()
+		return nil
+	}); err != nil {
+		item.mu.Lock()
+		item.timer.Stop()
+		item.mu.Unlock()
+		http.Error(w, "CONTROLLER_UNAVAILABLE", 409)
+		return
+	}
 	JSON(w, 200, map[string]any{"id": item.id, "generation": generation})
 }
 func (g *Gateway) websocketUpgrader() websocket.Upgrader {
@@ -585,12 +634,16 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 		http.Error(w, "CLAIM_REQUIRED", 403)
 		return
 	}
+	if slices.Contains(websocket.Subprotocols(r), "cwb.v2") {
+		g.websocketSession(w, r, session, item, client)
+		return
+	}
 	upgrader := g.websocketUpgrader()
 	var connection *websocket.Conn
 	err := g.Controllers.With(item.id, item.generation, func() error {
 		item.mu.Lock()
 		defer item.mu.Unlock()
-		if item.revoked || item.socket != nil {
+		if item.revoked || item.socket != nil || item.activated {
 			return errors.New("CLAIM_USED")
 		}
 		var err error
@@ -600,6 +653,7 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 		}
 		item.socket = connection
 		item.output = make(chan []byte, protocol.MaxQueuedFrames)
+		item.journal = nil
 		return nil
 	})
 	if err != nil {
@@ -641,6 +695,12 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 			case <-done:
 				return
 			case <-ticker.C:
+				item.mu.Lock()
+				valid := !item.revoked
+				item.mu.Unlock()
+				if !valid {
+					return
+				}
 				g.touchHostActivity()
 				if err := connection.WriteControl(websocket.PingMessage, nil, time.Now().Add(15*time.Second)); err != nil {
 					code := "WS_PING_FAILED"
@@ -772,7 +832,8 @@ func (g *Gateway) static(w http.ResponseWriter, r *http.Request, session *auth.S
 			copy[key] = value
 		}
 		copy["csrf"] = session.CSRF
-		copy["assetBuildId"] = archive.BuildID
+		copy["assetBuildId"] = browserBuildID(archive.BuildID)
+		copy["dilBasePath"] = g.dilBasePath(session)
 		data, err := json.Marshal(copy)
 		if err != nil {
 			http.Error(w, "CONFIGURATION_INVALID", 500)

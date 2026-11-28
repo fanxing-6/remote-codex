@@ -96,6 +96,11 @@ function createEnvironment(t, { attachError, blockingError } = {}) {
   target.id = 2;
   target.webContents = wc;
   target.destroyed = false;
+  target.getOpacity = () => envValue('setOpacity');
+  target.isVisible = () => !events.includes('hide');
+  function envValue(method) {
+    return events.findLast(event => Array.isArray(event) && event[0] === method)?.[1];
+  }
   target.hide = function () {
     assert.equal(this, target);
     events.push('hide');
@@ -295,6 +300,7 @@ test('hidden window blocks assets before host navigation and waits for the bridg
         ],
       },
     },
+    { method: 'Debugger.enable' },
     { method: 'Page.enable' },
     {
       method: 'Page.addScriptToEvaluateOnNewDocument',
@@ -313,7 +319,7 @@ test('hidden window blocks assets before host navigation and waits for the bridg
   assert.ok(
     env.events.indexOf('configuration') < env.events.indexOf('host-load'),
   );
-  assert.equal(env.commands.length, 4);
+  assert.equal(env.commands.length, 5);
   assert.equal(
     env.commands.at(-1).params.source,
     'window.captureInstalled = true;',
