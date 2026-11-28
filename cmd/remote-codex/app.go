@@ -41,7 +41,42 @@ type application struct {
 	ctx                                context.Context
 	provider                           tunnel.Provider
 	manualHost                         bool
+	hostIdleTimeout                    time.Duration
+	lastHostActivity                   time.Time
 	hostProbeFailures                  int
+}
+
+func (a *application) ensureHost(ctx context.Context) error {
+	a.operation.Lock()
+	defer a.operation.Unlock()
+	if a.stopping.Load() || !a.enabled.Load() || a.manualHost {
+		return errors.New("HOST_DISABLED")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	connected := a.client != nil
+	if connected {
+		a.lastHostActivity = time.Now()
+	}
+	a.mu.Unlock()
+	if connected {
+		return nil
+	}
+	return a.startLocked()
+}
+
+func (a *application) touchHostActivity() {
+	a.mu.Lock()
+	a.lastHostActivity = time.Now()
+	a.mu.Unlock()
+}
+
+func (a *application) isHostStandby() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.enabled.Load() && !a.manualHost && !a.stopping.Load() && a.client == nil
 }
 
 func (a *application) start() error {
@@ -56,6 +91,7 @@ func (a *application) startLocked() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.client != nil {
+		a.lastHostActivity = time.Now()
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 80*time.Second)
@@ -79,6 +115,7 @@ func (a *application) startLocked() error {
 		return err
 	}
 	a.client, a.archive = client, archive
+	a.lastHostActivity = time.Now()
 	a.hostProbeFailures = 0
 	a.log.Add(logger.Event{Event: "host_connected", DurationMS: int64(client.Endpoint.BootstrapElapsedMS)})
 	return nil
@@ -120,8 +157,14 @@ func (a *application) status() any {
 	result := a.gateway.Load().Health()
 	owner, _ := a.gateway.Load().Controllers.Status()
 	result["controllerActive"], result["sessions"] = owner != "", a.publicAuth.Count()
+	result["hostStandby"] = a.isHostStandby()
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	result["hostMode"] = "on_demand"
+	if a.manualHost {
+		result["hostMode"] = "manual"
+	}
+	result["hostIdleTimeoutSec"] = int(a.hostIdleTimeout.Seconds())
 	s := a.provider.Status()
 	result["tunnelMode"], result["publicOrigin"] = s.Mode, a.config.PublicOrigin
 	result["tunnel"] = s
@@ -150,6 +193,8 @@ func (a *application) doctor() any {
 	connection := client != nil && adapter.ProbeRuntime(ctx, client) == nil
 	if a.manualHost && client == nil {
 		checks = append(checks, map[string]any{"label": "宿主连接策略", "ok": true, "detail": "手动连接模式，尚未连接宿主"})
+	} else if client == nil && a.isHostStandby() {
+		checks = append(checks, map[string]any{"label": "宿主连接策略", "ok": true, "detail": "按需待机模式（无远程访问时不注入宿主，手机访问时自动唤醒，闲置 5 分钟自动释放）"})
 	} else {
 		checks = append(checks, map[string]any{"label": "隐藏宿主窗口与身份", "ok": connection, "detail": map[bool]string{true: "宿主进程身份与 Shim 身份一致", false: "点击连接宿主以建立桥接"}[connection]})
 	}
@@ -225,11 +270,6 @@ func (a *application) autoStart(enabled bool) error {
 }
 
 func (a *application) superviseHost(ctx context.Context) {
-	if a.enabled.Load() {
-		if err := a.start(); err != nil {
-			a.log.Add(logger.Event{Event: "host_attach_failed", ErrorCode: "HOST_ATTACH_FAILED"})
-		}
-	}
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -238,43 +278,53 @@ func (a *application) superviseHost(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
-		if !a.enabled.Load() {
-			continue
+		a.superviseHostOnce(ctx)
+	}
+}
+
+func (a *application) superviseHostOnce(ctx context.Context) {
+	a.operation.Lock()
+	defer a.operation.Unlock()
+	if !a.enabled.Load() || a.stopping.Load() || ctx.Err() != nil {
+		return
+	}
+	a.mu.Lock()
+	client, adapter, archive := a.client, a.adapter, a.archive
+	a.mu.Unlock()
+	if client == nil {
+		return
+	}
+	activeClients := a.gateway.Load().HasActiveClients()
+	if activeClients {
+		a.touchHostActivity()
+	}
+	a.mu.Lock()
+	idle := !activeClients && a.hostIdleTimeout > 0 && time.Since(a.lastHostActivity) >= a.hostIdleTimeout
+	a.mu.Unlock()
+	if idle {
+		a.log.Add(logger.Event{Event: "host_idle_detached"})
+		if err := a.stopLocked(); err != nil {
+			a.log.Add(logger.Event{Event: "host_detach_failed", ErrorCode: "HOST_DETACH_FAILED"})
 		}
-		a.operation.Lock()
-		if a.stopping.Load() {
-			a.operation.Unlock()
-			return
+		return
+	}
+	archiveErr := archive.Consistent(client.Endpoint.AssetBuildID)
+	var probeErr error
+	if archiveErr == nil && client.Snapshot()["ready"] != false {
+		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		probeErr = adapter.ProbeRuntime(probeCtx, client)
+		cancel()
+	}
+	if a.shouldReconnectHost(probeErr, archiveErr, client.Snapshot()["ready"] == false) {
+		a.log.Add(logger.Event{Event: "host_probe_failed", ErrorCode: "HOST_PROBE_FAILED"})
+		if err := a.stopLocked(); err != nil {
+			a.log.Add(logger.Event{Event: "host_detach_failed", ErrorCode: "HOST_DETACH_FAILED"})
 		}
-		a.mu.Lock()
-		client, adapter, archive := a.client, a.adapter, a.archive
-		a.mu.Unlock()
-		if client == nil {
-			a.hostProbeFailures = 0
+		if activeClients && a.enabled.Load() && !a.stopping.Load() {
 			if a.startLocked() != nil {
 				a.log.Add(logger.Event{Event: "host_attach_deferred", ErrorCode: "HOST_UNAVAILABLE"})
 			}
-		} else {
-			archiveErr := archive.Consistent(client.Endpoint.AssetBuildID)
-			var probeErr error
-			if archiveErr == nil && client.Snapshot()["ready"] != false {
-				probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-				probeErr = adapter.ProbeRuntime(probeCtx, client)
-				cancel()
-			}
-			if a.shouldReconnectHost(probeErr, archiveErr, client.Snapshot()["ready"] == false) {
-				a.log.Add(logger.Event{Event: "host_probe_failed", ErrorCode: "HOST_PROBE_FAILED"})
-				if err := a.stopLocked(); err != nil {
-					a.log.Add(logger.Event{Event: "host_detach_failed", ErrorCode: "HOST_DETACH_FAILED"})
-				}
-				if a.enabled.Load() {
-					if a.startLocked() != nil {
-						a.log.Add(logger.Event{Event: "host_attach_deferred", ErrorCode: "HOST_UNAVAILABLE"})
-					}
-				}
-			}
 		}
-		a.operation.Unlock()
 	}
 }
 
