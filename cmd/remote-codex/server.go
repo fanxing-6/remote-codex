@@ -189,9 +189,11 @@ func serve(c config.Config, configPath, runtimeDir, tunnelPath string, options s
 	}
 	a := &application{config: c, configPath: configPath, runtimeDir: runtimeDir, tunnelPath: tunnelPath, options: options,
 		adapter: host.New(c, runtimeDir, options.BootstrapCommand), provider: tunnel.NewProvider(c, runtimeDir, options.CloudflaredPath),
-		publicAuth: store, log: log, manualHost: options.NoHost, ctx: ctx}
+		publicAuth: store, log: log, manualHost: options.NoHost, hostIdleTimeout: 5 * time.Minute, ctx: ctx}
 	a.enabled.Store(!options.NoHost)
-	a.gateway.Store(gateway.New(c, store, log, 0))
+	g := gateway.New(c, store, log, 0)
+	g.SetHostLifecycle(a.ensureHost, a.touchHostActivity, a.isHostStandby)
+	a.gateway.Store(g)
 	ops := admin.Operations{Status: a.status, Doctor: a.doctor,
 		Start: func() error { a.enabled.Store(true); return a.start() }, Stop: func() error { a.enabled.Store(false); return a.stop() },
 		Reconnect: a.reconnect, Disconnect: func() error { return a.gateway.Load().Controllers.Disconnect() },
@@ -297,6 +299,9 @@ func serve(c config.Config, configPath, runtimeDir, tunnelPath string, options s
 				}
 			},
 			Status: func() string {
+				if a.isHostStandby() {
+					return "ChatGPT 按需待机（零占用）"
+				}
 				a.mu.Lock()
 				defer a.mu.Unlock()
 				if a.client != nil {
