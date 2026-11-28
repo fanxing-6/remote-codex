@@ -11,6 +11,7 @@ import {
 } from '../shared';
 import { banner } from './overlay-ui';
 import { installMobileRuntime, mobileBrowser } from './mobile-runtime';
+import { routeForThreadKey, visibleConversationRoute } from './route-state';
 installMobileRuntime();
 const root = window as any,
   configuration = root.__cwbConfiguration;
@@ -41,61 +42,12 @@ function rememberRoute(route: string) {
   url.searchParams.set('initialRoute', route);
   history.replaceState(history.state, '', url);
 }
-function routeForThreadKey(value: string, kind?: string | null) {
-  let key = value;
-  if (key.startsWith('codex:thread:')) key = key.slice('codex:thread:'.length);
-  if (key.startsWith('local:'))
-    return '/local/' + encodeURIComponent(key.slice('local:'.length));
-  if (key.startsWith('chatgpt:conversation:'))
-    return (
-      '/c/' + encodeURIComponent(key.slice('chatgpt:conversation:'.length))
-    );
-  if (kind === 'local') return '/local/' + encodeURIComponent(key);
-  if (kind === 'chatgpt') return '/c/' + encodeURIComponent(key);
-  return null;
-}
 function rememberConversation() {
-  const activeRow = document.querySelector(
-    '[data-app-action-sidebar-thread-active="true"][data-app-action-sidebar-thread-id]',
+  const route = visibleConversationRoute(
+    document,
+    new URL(location.href).searchParams.get('initialRoute'),
   );
-  const activeId = activeRow?.getAttribute('data-app-action-sidebar-thread-id'),
-    kind = activeRow?.getAttribute('data-app-action-sidebar-thread-kind');
-  if (activeId && activeId.length <= 256) {
-    const route = routeForThreadKey(activeId, kind);
-    if (route) {
-      rememberRoute(route);
-      return;
-    }
-  }
-  if (
-    new URL(location.href).searchParams
-      .get('initialRoute')
-      ?.startsWith('/local/')
-  )
-    return;
-  for (const attribute of [
-    'data-chatgpt-selection-conversation-id',
-    'data-above-composer-conversation-id',
-  ]) {
-    for (const selected of document.querySelectorAll('[' + attribute + ']')) {
-      const id = selected.getAttribute(attribute);
-      if (id && /^[a-zA-Z0-9][a-zA-Z0-9:_-]{15,255}$/.test(id)) {
-        const route = routeForThreadKey(id) ?? '/c/' + encodeURIComponent(id);
-        rememberRoute(route);
-        return;
-      }
-    }
-  }
-  const row = document.querySelector(
-    '[data-app-action-sidebar-thread-active="true"], [data-app-action-sidebar-thread-selected="true"]',
-  );
-  const chat = row
-    ?.closest('[data-sidebar-chatgpt-conversation-key]')
-    ?.getAttribute('data-sidebar-chatgpt-conversation-key');
-  if (chat?.startsWith('chatgpt:conversation:'))
-    rememberRoute(
-      '/c/' + encodeURIComponent(chat.slice('chatgpt:conversation:'.length)),
-    );
+  if (route) rememberRoute(route);
 }
 document.addEventListener(
   'click',

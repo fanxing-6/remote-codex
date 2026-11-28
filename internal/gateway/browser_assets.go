@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-const browserAssetRevision = "mobile-focus-v2"
+const browserAssetRevision = "mobile-picker-v4"
 const browserEntryAsset = "assets/348410.35ea11b6a0.js"
 const browserComposerAsset = "assets/async/839700.c1fe868f96.js"
 

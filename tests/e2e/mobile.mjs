@@ -202,7 +202,8 @@ async function choose(button,name,upload=false){
  const [picker]=await Promise.all([page.waitForEvent('filechooser'),button.click()]);
  const attributes=await picker.element().evaluate(input=>({accept:input.getAttribute('accept'),capture:input.getAttribute('capture'),label:input.getAttribute('aria-label')}));
  report.pickers.push({name,...attributes});
- if(!/camera|相机|拍照/i.test(name)){assert(!attributes.accept||attributes.accept==='*/*');assert.equal(attributes.capture,null)}
+ if(/photos$/i.test(name)){assert(['image/*','image/*,video/*'].includes(attributes.accept));assert.equal(attributes.capture,null)}
+ else if(!/camera|相机|拍照/i.test(name)){assert.equal(attributes.accept,'application/*,text/*');assert.equal(attributes.capture,null)}
  else {assert.notEqual(attributes.capture,null);assert.equal(attributes.accept,'image/*')}
  await picker.setFiles(upload?attachment:[]);
  await settle();await noEditableFocus(name+' file picker return');
@@ -217,7 +218,7 @@ async function choose(button,name,upload=false){
 }
 async function sharedMenu(mode){
  await home(mode);await plus().click();
- await choose(page.getByRole('button',{name:/^(照片|Photos)$/}).last(),mode+' photos',true);
+ await choose(page.getByRole('button',{name:/^(照片|Photos)$/}).last(),mode+' photos');
  await plus().click();await choose(page.getByRole('button',{name:/^(文件|Files)$/}).last(),mode+' files',true);
  await plus().click();await choose(page.getByRole('button',{name:/^(相机|Camera)$/}).last(),mode+' camera');
  // 逐一触发页面实际提供的输入元素，覆盖隐藏的媒体入口及 showPicker。
@@ -227,12 +228,12 @@ async function sharedMenu(mode){
   const [picker]=await Promise.all([page.waitForEvent('filechooser'),input.evaluate(element=>element.click())]);
   const attributes=await picker.element().evaluate(element=>({accept:element.getAttribute('accept'),capture:element.getAttribute('capture')}));
   report.pickers.push({name:mode+' direct '+label,...attributes});
-  if(attributes.capture===null)assert(!attributes.accept||attributes.accept==='*/*');
+  if(attributes.capture===null){if(/照片|图片|相册|photo|media/i.test(label??''))assert(['image/*','image/*,video/*'].includes(attributes.accept));else assert.equal(attributes.accept,'application/*,text/*')}
   await picker.setFiles([]);
  }
- const input=page.locator('input[type=file]:not([capture])').first();
+ const input=page.locator('input[type=file][aria-label="附加文件"],input[type=file][aria-label="Attach files"]').first();
  const [picker]=await Promise.all([page.waitForEvent('filechooser'),input.evaluate(element=>element.showPicker())]);
- assert.equal(await picker.element().getAttribute('accept'),null);await picker.setFiles([]);
+ assert.equal(await picker.element().getAttribute('accept'),'application/*,text/*');await picker.setFiles([]);
  report.checks.push(mode+' click and showPicker');
 }
 async function thread(kind){
@@ -246,7 +247,7 @@ async function thread(kind){
 async function chatConversation(){
  await home('chat');await plus().click();
  const [picker]=await Promise.all([page.waitForEvent('filechooser'),page.getByRole('button',{name:/^(文件|Files)$/}).last().click()]);
- assert.equal(await picker.element().getAttribute('accept'),null);await picker.setFiles(attachment);
+ assert.equal(await picker.element().getAttribute('accept'),'application/*,text/*');await picker.setFiles(attachment);
  await page.getByText(attachmentName,{exact:true}).first().waitFor({timeout:60000});
  await editor().click();await editor().fill('请确认收到附件，并仅回复：CWB_BROWSER_OK');
  await page.getByRole('button',{name:/^(发送|发送消息|发送提示|Send|Send message|Send prompt)$/i}).click();
@@ -266,11 +267,11 @@ try{
  await settle();await noEditableFocus('Android initial load');
  for(const path of ['/cwb/browser.js','/cwb/mobile.css']){
   const resource=await page.locator(path.endsWith('.js')?'script[src^="'+path+'"]':'link[href^="'+path+'"]');
-  const url=await resource.getAttribute(path.endsWith('.js')?'src':'href');assert.match(url,/\?cwb=mobile-focus-v2$/);
+  const url=await resource.getAttribute(path.endsWith('.js')?'src':'href');assert.match(url,/\?cwb=mobile-picker-v4$/);
   const response=await page.evaluate(async url=>{const response=await fetch(url);return {status:response.status,cacheControl:response.headers.get('cache-control')}},url);
-  assert.equal(response.status,200);assert.equal(response.cacheControl,'no-store');
+  assert.equal(response.status,200);assert.equal(response.cacheControl,'private, no-cache');
  }
- report.checks.push('browser runtime and stylesheet versioned with no-store');
+ report.checks.push('browser runtime and stylesheet use versioned cache revalidation');
  await page.evaluate(()=>{window.__mobileEvents={viewportResize:0,focusin:0};visualViewport.addEventListener('resize',()=>window.__mobileEvents.viewportResize++);document.addEventListener('focusin',()=>window.__mobileEvents.focusin++)});
  assert.match(await page.locator('meta[name=viewport]').getAttribute('content'),/viewport-fit=cover, interactive-widget=resizes-content/);
  for(const mode of ['chat','work']){
@@ -289,7 +290,7 @@ try{
  await plus().click();await choose(page.getByRole('button',{name:/^(文件和文件夹|Files and folders)$/}).last(),'work thread files',false);
  const before=new Set(await readdir(homedir()+'/.codex/attachments',{recursive:true}));
  await plus().click();const [picker]=await Promise.all([page.waitForEvent('filechooser'),page.getByRole('button',{name:/^(文件和文件夹|Files and folders)$/}).last().click()]);
- assert.equal(await picker.element().getAttribute('accept'),null);await picker.setFiles(attachment);
+ assert.equal(await picker.element().getAttribute('accept'),'application/*,text/*');await picker.setFiles(attachment);
  await page.getByText(attachmentName,{exact:true}).first().waitFor({timeout:60000});
  await noEditableFocus('work thread uploaded file return');
  const created=(await readdir(homedir()+'/.codex/attachments',{recursive:true})).filter(name=>!before.has(name)&&name.endsWith('/'+attachmentName));

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"compress/flate"
 	"context"
 	"encoding/json"
 	"errors"
@@ -45,7 +46,14 @@ type claim struct {
 func (c *claim) write(kind int, data []byte) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	if err := c.socket.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	level := flate.BestSpeed
+	if len(data) >= 64<<10 {
+		level = flate.DefaultCompression
+	}
+	if err := c.socket.SetCompressionLevel(level); err != nil {
+		return err
+	}
+	if err := c.socket.SetWriteDeadline(time.Now().Add(45 * time.Second)); err != nil {
 		return err
 	}
 	return c.socket.WriteMessage(kind, data)
@@ -92,6 +100,7 @@ type Gateway struct {
 	ensureHost     func(context.Context) error
 	touchActivity  func()
 	hostStandby    func() bool
+	assets         gzipAssetCache
 }
 
 func (g *Gateway) SetHostLifecycle(ensure func(context.Context) error, touch func(), standby func() bool) {
@@ -190,6 +199,7 @@ func (g *Gateway) SetHost(client *host.Client, archive *asar.Archive) error {
 	if err != nil {
 		return err
 	}
+	g.assets.bindBuildID(archive.BuildID)
 	g.mu.Lock()
 	g.host = client
 	g.archive = archive
@@ -323,19 +333,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/auth/login" && r.Method == "GET" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
-		w.Write(embedassets.Read("login.html"))
+		g.assets.serveStaticAsset(w, r, "", "login.html", "text/html; charset=utf-8", embedassets.Read("login.html"))
 		return
 	}
 	if r.URL.Path == "/auth/login.js" && r.Method == "GET" {
-		w.Header().Set("Content-Type", "text/javascript")
-		w.Write(embedassets.Read("login.js"))
+		g.assets.serveStaticAsset(w, r, "", "login.js", "text/javascript", embedassets.Read("login.js"))
 		return
 	}
 	if r.URL.Path == "/auth/login.css" && r.Method == "GET" {
-		w.Header().Set("Content-Type", "text/css")
-		w.Write(embedassets.Read("login.css"))
+		g.assets.serveStaticAsset(w, r, "", "login.css", "text/css", embedassets.Read("login.css"))
 		return
 	}
 	if r.URL.Path == "/auth/csrf" && r.Method == "GET" {
@@ -554,6 +561,15 @@ func (g *Gateway) acquire(w http.ResponseWriter, r *http.Request, session *auth.
 	})
 	JSON(w, 200, map[string]any{"id": item.id, "generation": generation})
 }
+func (g *Gateway) websocketUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{
+		CheckOrigin:       func(r *http.Request) bool { return r.Header.Get("Origin") == g.Config.PublicOrigin },
+		Subprotocols:      []string{"cwb.v1"},
+		EnableCompression: true,
+		HandshakeTimeout:  15 * time.Second,
+	}
+}
+
 func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *auth.Session) {
 	var id string
 	for _, part := range websocket.Subprotocols(r) {
@@ -569,7 +585,7 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 		http.Error(w, "CLAIM_REQUIRED", 403)
 		return
 	}
-	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == g.Config.PublicOrigin }, Subprotocols: []string{"cwb.v1"}, HandshakeTimeout: 5 * time.Second}
+	upgrader := g.websocketUpgrader()
 	var connection *websocket.Conn
 	err := g.Controllers.With(item.id, item.generation, func() error {
 		item.mu.Lock()
@@ -606,14 +622,14 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 		g.mu.Unlock()
 	}()
 	connection.SetReadLimit(protocol.MaxFrame)
-	connection.SetReadDeadline(time.Now().Add(60 * time.Second))
+	connection.SetReadDeadline(time.Now().Add(90 * time.Second))
 	connection.SetPongHandler(func(string) error {
 		g.touchHostActivity()
-		return connection.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return connection.SetReadDeadline(time.Now().Add(90 * time.Second))
 	})
 	connection.SetPingHandler(func(data string) error {
 		g.touchHostActivity()
-		return connection.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
+		return connection.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(15*time.Second))
 	})
 	done := make(chan struct{})
 	defer close(done)
@@ -626,7 +642,7 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request, session *aut
 				return
 			case <-ticker.C:
 				g.touchHostActivity()
-				if err := connection.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+				if err := connection.WriteControl(websocket.PingMessage, nil, time.Now().Add(15*time.Second)); err != nil {
 					code := "WS_PING_FAILED"
 					var network net.Error
 					if errors.As(err, &network) && network.Timeout() {
@@ -762,23 +778,19 @@ func (g *Gateway) static(w http.ResponseWriter, r *http.Request, session *auth.S
 			http.Error(w, "CONFIGURATION_INVALID", 500)
 			return
 		}
-		w.Header().Set("Content-Type", "text/javascript")
-		fmt.Fprintf(w, "window.__cwbConfiguration=%s;", data)
+		serveAsset(w, r, "cwb/configuration.js", "text/javascript", "no-store", []byte(fmt.Sprintf("window.__cwbConfiguration=%s;", data)), nil)
 		return
 	}
 	if r.URL.Path == "/cwb/browser.js" {
-		w.Header().Set("Content-Type", "text/javascript")
-		w.Write(embedassets.Read("browser.js"))
+		g.assets.serveStaticAsset(w, r, archive.BuildID, "cwb/browser.js", "text/javascript", embedassets.Read("browser.js"))
 		return
 	}
 	if r.URL.Path == "/cwb/mobile.css" {
-		w.Header().Set("Content-Type", "text/css")
-		w.Write(embedassets.Read("mobile.css"))
+		g.assets.serveStaticAsset(w, r, archive.BuildID, "cwb/mobile.css", "text/css", embedassets.Read("mobile.css"))
 		return
 	}
 	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(html)
+		g.assets.serveStaticAsset(w, r, archive.BuildID, "index.html", "text/html; charset=utf-8", html)
 		return
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/")
@@ -792,10 +804,5 @@ func (g *Gateway) static(w http.ResponseWriter, r *http.Request, session *auth.S
 		http.Error(w, "BROWSER_ATTACHMENT_ASSET_UNSUPPORTED", 503)
 		return
 	}
-	w.Header().Set("Content-Type", mime.TypeByExtension(path.Ext(name)))
-	w.Header().Set("Cache-Control", "private, max-age=3600")
-	if name == browserEntryAsset || name == browserComposerAsset {
-		w.Header().Set("Cache-Control", "private, no-cache")
-	}
-	w.Write(data)
+	g.assets.serveStaticAsset(w, r, archive.BuildID, name, mime.TypeByExtension(path.Ext(name)), data)
 }

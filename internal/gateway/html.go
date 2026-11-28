@@ -18,22 +18,41 @@ func RewriteHTML(source []byte, origin string) ([]byte, error) {
 	var viewport *html.Node
 	policies := 0
 	scripts := 0
+	var deferredModules []*html.Node
+	preloaded := map[string]bool{}
 	var walk func(*html.Node) error
 	walk = func(node *html.Node) error {
 		if node.Type == html.ElementNode && node.Data == "head" {
 			head = node
 		}
-		if node.Type == html.ElementNode && node.Data == "script" {
-			scripts++
+		if node.Type == html.ElementNode && (node.Data == "script" || node.Data == "link") {
 			for index, attribute := range node.Attr {
-				if attribute.Key == "src" && attribute.Val == "/"+browserEntryAsset {
+				if (attribute.Key == "src" || attribute.Key == "href") && attribute.Val == "/"+browserEntryAsset {
 					node.Attr[index].Val += "?cwb=" + browserAssetRevision
 				}
 			}
+		}
+		if node.Type == html.ElementNode && node.Data == "script" {
+			scripts++
 			for index, attribute := range node.Attr {
 				if attribute.Key == "type" && attribute.Val == "module" {
 					node.Attr[index].Val = "application/cwb-module"
+					deferredModules = append(deferredModules, node)
 				}
+			}
+		}
+		if node.Type == html.ElementNode && node.Data == "link" {
+			var relation, href string
+			for _, attribute := range node.Attr {
+				if attribute.Key == "rel" {
+					relation = attribute.Val
+				}
+				if attribute.Key == "href" {
+					href = attribute.Val
+				}
+			}
+			if strings.EqualFold(relation, "modulepreload") {
+				preloaded[href] = true
 			}
 		}
 		if node.Type == html.ElementNode && node.Data == "meta" {
@@ -102,6 +121,23 @@ func RewriteHTML(source []byte, origin string) ([]byte, error) {
 	}
 	if head == nil || policies != 1 || scripts == 0 {
 		return nil, errors.New("HTML_STRUCTURE_UNSUPPORTED")
+	}
+	for _, module := range deferredModules {
+		var source string
+		attributes := []html.Attribute{{Key: "rel", Val: "modulepreload"}}
+		for _, attribute := range module.Attr {
+			switch attribute.Key {
+			case "src":
+				source = attribute.Val
+				attributes = append(attributes, html.Attribute{Key: "href", Val: source})
+			case "crossorigin", "integrity", "referrerpolicy", "nonce":
+				attributes = append(attributes, attribute)
+			}
+		}
+		if source != "" && !preloaded[source] {
+			head.AppendChild(&html.Node{Type: html.ElementNode, Data: "link", Attr: attributes})
+			preloaded[source] = true
+		}
 	}
 	if viewport == nil {
 		viewport = &html.Node{Type: html.ElementNode, Data: "meta", Attr: []html.Attribute{{Key: "name", Val: "viewport"}}}

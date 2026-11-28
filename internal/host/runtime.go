@@ -70,7 +70,7 @@ func (a *Adapter) Attach(ctx context.Context, identity ProcessIdentity, assetBui
 		case <-ctx.Done():
 			client.Close()
 			return nil, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		case <-time.After(30 * time.Millisecond):
 		}
 	}
 	client.Close()
